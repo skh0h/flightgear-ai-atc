@@ -1,0 +1,49 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- stub: AI ATC dialog with log area and request buttons -->
+<PropertyList>
+  <dialog>
+    <name>ai-atc</name>
+    <layout>vbox</layout>
+    <text>
+      <label>AI ATC</label>
+    </text>
+
+    <!-- Log / clearance text area -->
+    <!-- TODO: bind to /ai-atc/response/text and auto-scroll on update -->
+    <textbox>
+      <name>atc-log</name>
+      <rows type="int">10</rows>
+      <cols type="int">60</cols>
+      <editable type="bool">false</editable>
+      <property>/ai-atc/response/text</property>
+    </textbox>
+
+    <!-- Request buttons -->
+    <group>
+      <layout>hbox</layout>
+      <button>
+        <!-- TODO: set /ai-atc/request/type="taxi" and trigger -->
+        <legend>Request Taxi</legend>
+        <binding>
+          <command>nasal</command>
+          <script># TODO</script>
+        </binding>
+      </button>
+      <button>
+        <!-- TODO: set /ai-atc/request/type="takeoff" and trigger -->
+        <legend>Request Takeoff</legend>
+        <binding>
+          <command>nasal</command>
+          <script># TODO</script>
+        </binding>
+      </button>
+      <button>
+        <legend>Close</legend>
+        <binding>
+          <command>dialog-close</command>
+          <dialog-name>ai-atc</dialog-name>
+        </binding>
+      </button>
+    </group>
+  </dialog>
+</PropertyList>

@@ -1,44 +1,20 @@
-# OS
-.DS_Store
-Thumbs.db
+# Secrets
+.env
 
-# Dependencies
-node_modules/
-venv/
+# Python
 __pycache__/
 *.pyc
-
-# Environment
-.env
-.env.local
-.env.*.local
-
-# Logs
-*.log
-logs/
-
-# Agent runtime state
-.claude-mpm/
-
-# IDE
-.vscode/
-.idea/
-*.swp
-*.swo
-*~
-
-# Build outputs
-dist/
-build/
-*.o
-*.exe
-
-# Testing
+.venv/
+venv/
 .pytest_cache/
-coverage/
-.nyc_output/
 
-# Temporary files
-tmp/
-temp/
-*.tmp
+# SQLite cache databases
+*.sqlite
+*.sqlite3
+
+# macOS
+.DS_Store
+
+# Fixtures / cache outputs
+fixtures/cache/
+fixtures/*.generated.*
