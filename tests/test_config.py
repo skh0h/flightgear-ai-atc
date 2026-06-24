@@ -1,0 +1,178 @@
+"""Tests for sidecar/config.py — all offline, no network calls."""
+
+from __future__ import annotations
+
+import os
+from pathlib import Path
+
+import pytest
+
+from sidecar.config import ConfigError, Settings, load
+
+
+# ---------------------------------------------------------------------------
+# Helpers
+# ---------------------------------------------------------------------------
+
+
+def _clean_env(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Remove all config-related env vars so defaults are predictable."""
+    for key in (
+        "GEMINI_API_KEY",
+        "FG_TELNET_HOST",
+        "FG_TELNET_PORT",
+        "CACHE_DB_PATH",
+        "TTS_VOICE",
+        "LOG_LEVEL",
+        "GEMINI_MODEL_FAST",
+        "GEMINI_MODEL_PRO",
+    ):
+        monkeypatch.delenv(key, raising=False)
+
+
+# ---------------------------------------------------------------------------
+# Default values
+# ---------------------------------------------------------------------------
+
+
+def test_load_returns_defaults(monkeypatch: pytest.MonkeyPatch) -> None:
+    """load() with no env vars returns the documented defaults."""
+    _clean_env(monkeypatch)
+
+    settings = load(env_path=None)
+
+    assert isinstance(settings, Settings)
+    assert settings.fg_telnet_host == "localhost"
+    assert settings.fg_telnet_port == 5501
+    assert settings.cache_db_path == "fixtures/cache/airports.sqlite"
+    assert settings.tts_voice == "Alex"
+    assert settings.log_level == "INFO"
+    assert settings.gemini_model_fast == "gemini-2.5-flash"
+    assert settings.gemini_model_pro == "gemini-2.5-pro"
+
+
+def test_missing_api_key_yields_none(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A missing GEMINI_API_KEY must produce gemini_api_key=None, not raise."""
+    _clean_env(monkeypatch)
+    monkeypatch.delenv("GEMINI_API_KEY", raising=False)
+
+    settings = load(env_path=None)
+
+    assert settings.gemini_api_key is None
+
+
+def test_empty_api_key_yields_none(monkeypatch: pytest.MonkeyPatch) -> None:
+    """An empty GEMINI_API_KEY string also yields None."""
+    _clean_env(monkeypatch)
+    monkeypatch.setenv("GEMINI_API_KEY", "")
+
+    settings = load(env_path=None)
+
+    assert settings.gemini_api_key is None
+
+
+# ---------------------------------------------------------------------------
+# Reading values from env vars
+# ---------------------------------------------------------------------------
+
+
+def test_reads_api_key_from_env(monkeypatch: pytest.MonkeyPatch) -> None:
+    _clean_env(monkeypatch)
+    monkeypatch.setenv("GEMINI_API_KEY", "test-key-123")
+
+    settings = load(env_path=None)
+
+    assert settings.gemini_api_key == "test-key-123"
+
+
+def test_reads_all_overrides_from_env(monkeypatch: pytest.MonkeyPatch) -> None:
+    _clean_env(monkeypatch)
+    monkeypatch.setenv("GEMINI_API_KEY", "k")
+    monkeypatch.setenv("FG_TELNET_HOST", "192.168.1.10")
+    monkeypatch.setenv("FG_TELNET_PORT", "9999")
+    monkeypatch.setenv("CACHE_DB_PATH", "/tmp/test.sqlite")
+    monkeypatch.setenv("TTS_VOICE", "Samantha")
+    monkeypatch.setenv("LOG_LEVEL", "debug")
+    monkeypatch.setenv("GEMINI_MODEL_FAST", "gemini-2.5-flash")
+    monkeypatch.setenv("GEMINI_MODEL_PRO", "gemini-2.5-pro")
+
+    settings = load(env_path=None)
+
+    assert settings.fg_telnet_host == "192.168.1.10"
+    assert settings.fg_telnet_port == 9999
+    assert settings.cache_db_path == "/tmp/test.sqlite"
+    assert settings.tts_voice == "Samantha"
+    assert settings.log_level == "DEBUG"  # normalised to uppercase
+    assert settings.gemini_model_fast == "gemini-2.5-flash"
+    assert settings.gemini_model_pro == "gemini-2.5-pro"
+
+
+# ---------------------------------------------------------------------------
+# Reading from a .env file
+# ---------------------------------------------------------------------------
+
+
+def test_reads_values_from_dotenv_file(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """load(env_path=...) picks up values from a .env file."""
+    _clean_env(monkeypatch)
+
+    env_file = tmp_path / ".env"
+    env_file.write_text(
+        "GEMINI_API_KEY=file-key\nFG_TELNET_PORT=7777\n"
+    )
+
+    settings = load(env_path=str(env_file))
+
+    assert settings.gemini_api_key == "file-key"
+    assert settings.fg_telnet_port == 7777
+
+
+def test_missing_dotenv_file_does_not_raise(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """load() must not raise if the .env path doesn't exist."""
+    _clean_env(monkeypatch)
+
+    # Should complete without error even though the path is bogus.
+    settings = load(env_path="/nonexistent/path/.env")
+
+    assert isinstance(settings, Settings)
+
+
+# ---------------------------------------------------------------------------
+# Invalid values raise ConfigError
+# ---------------------------------------------------------------------------
+
+
+def test_invalid_port_string_raises(monkeypatch: pytest.MonkeyPatch) -> None:
+    _clean_env(monkeypatch)
+    monkeypatch.setenv("FG_TELNET_PORT", "not-a-number")
+
+    with pytest.raises(ConfigError, match="FG_TELNET_PORT"):
+        load(env_path=None)
+
+
+def test_port_zero_raises(monkeypatch: pytest.MonkeyPatch) -> None:
+    _clean_env(monkeypatch)
+    monkeypatch.setenv("FG_TELNET_PORT", "0")
+
+    with pytest.raises(ConfigError, match="FG_TELNET_PORT"):
+        load(env_path=None)
+
+
+def test_port_out_of_range_raises(monkeypatch: pytest.MonkeyPatch) -> None:
+    _clean_env(monkeypatch)
+    monkeypatch.setenv("FG_TELNET_PORT", "99999")
+
+    with pytest.raises(ConfigError, match="FG_TELNET_PORT"):
+        load(env_path=None)
+
+
+def test_empty_host_raises(monkeypatch: pytest.MonkeyPatch) -> None:
+    _clean_env(monkeypatch)
+    monkeypatch.setenv("FG_TELNET_HOST", "")
+
+    with pytest.raises(ConfigError, match="FG_TELNET_HOST"):
+        load(env_path=None)

@@ -1,6 +1,10 @@
-# NOTE: exact package names and versions should be confirmed against Google's
-# official Gemini Python SDK docs at implementation time.
-# As of mid-2025 the SDK package is `google-genai`; verify before pinning.
-google-genai
-python-dotenv
-pytest
+# Versions confirmed against official PyPI on 2026-06-23:
+#   google-genai: https://pypi.org/project/google-genai/
+#   python-dotenv: https://pypi.org/project/python-dotenv/
+#   pytest: https://pypi.org/project/pytest/
+google-genai==1.47.0
+python-dotenv==1.2.1
+pytest==8.4.2
+# cryptography 49+ requires OpenSSL build toolchain not present on this Mac;
+# pin to last version shipping pre-built x86_64 macOS wheels.
+cryptography==43.0.3
