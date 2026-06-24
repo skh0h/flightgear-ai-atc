@@ -51,12 +51,17 @@ def test_load_returns_defaults(monkeypatch: pytest.MonkeyPatch) -> None:
     assert settings.gemini_model_pro == "gemini-2.5-pro"
 
 
-def test_missing_api_key_yields_none(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_missing_api_key_yields_none(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     """A missing GEMINI_API_KEY must produce gemini_api_key=None, not raise."""
     _clean_env(monkeypatch)
     monkeypatch.delenv("GEMINI_API_KEY", raising=False)
-
-    settings = load(env_path=None)
+    # Point at a non-existent .env so load_dotenv() does NOT auto-discover a
+    # developer's real, gitignored .env at the repo root. find_dotenv() walks up
+    # from config.py's own location (not the CWD), so passing an explicit path
+    # is the only reliable way to isolate this test from a local key.
+    settings = load(env_path=str(tmp_path / "nonexistent.env"))
 
     assert settings.gemini_api_key is None
 
