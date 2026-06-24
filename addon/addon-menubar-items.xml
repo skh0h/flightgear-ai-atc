@@ -1,0 +1,26 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- stub: adds an "AI ATC" menu to the FlightGear menu bar -->
+<PropertyList>
+  <menu>
+    <label>AI ATC</label>
+    <enabled type="bool">true</enabled>
+    <item>
+      <!-- TODO: wire to open gui/dialogs/ai-atc.xml dialog -->
+      <label>Open ATC Panel</label>
+      <binding>
+        <command>dialog-show</command>
+        <dialog-name>ai-atc</dialog-name>
+      </binding>
+    </item>
+    <item>
+      <!-- TODO: trigger pushback/taxi request via /ai-atc/request props -->
+      <label>Request Taxi Clearance</label>
+      <binding>
+        <command>nasal</command>
+        <script>
+          # TODO: set /ai-atc/request/type = "taxi" and /ai-atc/request/trigger = 1
+        </script>
+      </binding>
+    </item>
+  </menu>
+</PropertyList>

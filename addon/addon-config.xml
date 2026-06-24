@@ -1,0 +1,19 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- stub: default properties and key bindings for AI ATC addon -->
+<PropertyList>
+  <!-- Default property values initialised at addon load -->
+  <ai-atc>
+    <request>
+      <type type="string">taxi</type>
+      <callsign type="string"></callsign>
+      <trigger type="bool">false</trigger>
+    </request>
+    <response>
+      <text type="string"></text>
+      <ready type="bool">false</ready>
+    </response>
+    <status type="string">idle</status>
+  </ai-atc>
+
+  <!-- TODO: add key bindings, e.g. Ctrl+Shift+T to trigger taxi request -->
+</PropertyList>
