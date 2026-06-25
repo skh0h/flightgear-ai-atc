@@ -2,80 +2,47 @@
 
 AI-powered ATC clearances and taxi routing for FlightGear.
 
+![Python 3.11+](https://img.shields.io/badge/python-3.11%2B-blue)
+![FlightGear 2024.1.5+](https://img.shields.io/badge/flightgear-2024.1.5%2B-green)
+![Windows | macOS](https://img.shields.io/badge/platform-Windows%20%7C%20macOS-blue)
+![License](https://img.shields.io/badge/license-TODO-red)
+
 ## Overview
 
-Two components work together:
+A smart assistant for FlightGear pilots combining real-time ATC services with automated taxi routing. Two components work together:
 
-- **Python sidecar** (`sidecar/`) — AI/parsing/routing on your Mac. Talks to FlightGear over telnet.
-- **Nasal addon** (`addon/`) — thin in-sim UI. Reads/writes the `/ai-atc/` property mailbox.
+- **Python sidecar** (`sidecar/`) — AI parsing, routing, and TTS running on Windows or macOS. Communicates with FlightGear over telnet.
+- **Nasal add-on** (`addon/`) — lightweight in-sim UI layer. Exchanges data with the sidecar via property mailbox at `/ai-atc/`.
 
-When online the sidecar uses the Gemini API for airport parsing and phraseology. When offline it falls back to deterministic groundnet.xml parsing and template-based ATC phrases.
+**When online:** Uses the Google Gemini API to intelligently parse real airport data and generate contextual ATC phrases.  
+**When offline:** Falls back to deterministic groundnet.xml parsing and template-based responses.
 
-See [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) for the full design.
+See [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) for the full system design.
 
-## Two-Mac Dev/Test Workflow
+### Platform Support
 
-| Mac | Role |
-|---|---|
-| Dev Mac | Code here, push to GitHub |
-| FlightGear Mac | Pull from GitHub, run FlightGear + sidecar |
+This add-on runs on **Windows and macOS**. The core sidecar (Python) and in-sim add-on (Nasal) are fully cross-platform. Native text-to-speech voice output is currently available on macOS; Windows TTS support is coming soon — all other features work seamlessly on both platforms.
 
-Steps:
-1. Push changes from dev Mac to `main`.
-2. On FlightGear Mac: `git pull origin main`.
-3. Start FlightGear with `--telnet=5501` and the addon path pointed at this repo's `addon/` directory.
-4. On FlightGear Mac: `python3 sidecar/main.py`.
-5. Test in-sim, iterate.
+## Features
 
-## Setup
+- 🎙️ **AI-Powered ATC** — Real-time clearances and phraseology using Google Gemini
+- 🗺️ **Smart Taxi Routing** — A* pathfinding with groundnet awareness
+- 🛬 **Runway Selection** — Intelligent runway recommendations based on wind and traffic
+- 🖼️ **Airport Intelligence** — Automated parsing of airport pictures and groundnet data
+- 🔄 **Offline Fallback** — Full functionality without internet (template-based responses)
+- 🔊 **Text-to-Speech** — Native macOS TTS integration for immersive ATC experience (Windows support coming soon)
+- 🧠 **Schema Learning** — AI-assisted parser that learns from airport layouts (Phase 4)
 
-### Requirements
+## Coming Soon
 
-- Python 3.11+
-- FlightGear 2024.1.5+
-- macOS (for `say` TTS; other platforms need a TTS backend swap)
+More documentation is on the way. This section will include:
 
-### Install
+- Installation & Setup
+- Quick Start Guide
+- Configuration Reference
+- Project Structure Overview
+- Development Workflow
+- Contributing Guidelines
+- License Information
 
-```bash
-python3 -m venv .venv
-source .venv/bin/activate
-pip install -r requirements.txt
-```
-
-### Configure
-
-```bash
-cp .env.example .env
-# Edit .env and set GEMINI_API_KEY=<your key>
-```
-
-### Run tests
-
-```bash
-pytest tests/ -q
-```
-
-### Start sidecar
-
-```bash
-python3 sidecar/main.py
-```
-
-Make sure FlightGear is already running with `--telnet=5501` before starting the sidecar.
-
-## Loading the Addon in FlightGear
-
-In the FlightGear launcher add the `addon/` directory as an add-on path, or pass:
-
-```
---addon=/path/to/flightgear-ai-atc/addon
-```
-
-## Environment Variables
-
-| Variable | Required | Description |
-|---|---|---|
-| `GEMINI_API_KEY` | Yes (online mode) | Google Gemini API key. Goes in `.env` (gitignored). |
-
-Never commit `.env`. Only `.env.example` is tracked.
+Check back soon, or see [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) for detailed system design in the meantime.
