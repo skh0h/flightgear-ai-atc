@@ -1,11 +1,12 @@
 <?xml version="1.0" encoding="UTF-8"?>
-<!-- stub: default properties and key bindings for AI ATC addon -->
+<!-- Default property values and key bindings for the AI ATC addon. -->
 <PropertyList>
-  <!-- Default property values initialised at addon load -->
+  <!-- Mailbox defaults initialised at addon load (see addon-main.nas). -->
   <ai-atc>
     <request>
       <type type="string">taxi</type>
       <callsign type="string"></callsign>
+      <runway type="string"></runway>
       <trigger type="bool">false</trigger>
     </request>
     <response>
@@ -13,7 +14,26 @@
       <ready type="bool">false</ready>
     </response>
     <status type="string">idle</status>
+    <log type="string"></log>
   </ai-atc>
 
-  <!-- TODO: add key bindings, e.g. Ctrl+Shift+T to trigger taxi request -->
+  <!-- Ctrl+Shift+T fires a taxi request without opening the dialog. -->
+  <input>
+    <keyboard>
+      <key n="20">
+        <name>Ctrl-Shift-T</name>
+        <desc>AI ATC: request taxi clearance</desc>
+        <mod-ctrl type="bool">true</mod-ctrl>
+        <binding>
+          <command>nasal</command>
+          <script>
+            setprop("/ai-atc/request/type", "taxi");
+            setprop("/ai-atc/response/ready", 0);
+            setprop("/ai-atc/status", "processing");
+            setprop("/ai-atc/request/trigger", 1);
+          </script>
+        </binding>
+      </key>
+    </keyboard>
+  </input>
 </PropertyList>

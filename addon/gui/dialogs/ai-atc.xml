@@ -1,42 +1,103 @@
 <?xml version="1.0" encoding="UTF-8"?>
-<!-- stub: AI ATC dialog with log area and request buttons -->
+<!-- AI ATC dialog: callsign/runway inputs, scrolling transcript, request buttons. -->
 <PropertyList>
   <dialog>
     <name>ai-atc</name>
     <layout>vbox</layout>
+    <default-padding type="int">4</default-padding>
+
     <text>
       <label>AI ATC</label>
     </text>
 
-    <!-- Log / clearance text area -->
-    <!-- TODO: bind to /ai-atc/response/text and auto-scroll on update -->
+    <!-- Callsign + runway entry -->
+    <group>
+      <layout>hbox</layout>
+      <text><label>Callsign</label></text>
+      <input>
+        <property>/ai-atc/request/callsign</property>
+        <live type="bool">true</live>
+      </input>
+      <text><label>Runway</label></text>
+      <input>
+        <property>/ai-atc/request/runway</property>
+        <live type="bool">true</live>
+      </input>
+    </group>
+
+    <!-- Status line -->
+    <text>
+      <label>Status: idle</label>
+      <property>/ai-atc/status</property>
+      <live type="bool">true</live>
+      <format>Status: %s</format>
+    </text>
+
+    <!-- Scrolling clearance transcript -->
     <textbox>
       <name>atc-log</name>
-      <rows type="int">10</rows>
+      <rows type="int">12</rows>
       <cols type="int">60</cols>
       <editable type="bool">false</editable>
-      <property>/ai-atc/response/text</property>
+      <slider type="int">15</slider>
+      <property>/ai-atc/log</property>
+      <live type="bool">true</live>
     </textbox>
 
     <!-- Request buttons -->
     <group>
       <layout>hbox</layout>
+
       <button>
-        <!-- TODO: set /ai-atc/request/type="taxi" and trigger -->
-        <legend>Request Taxi</legend>
+        <legend>Pushback</legend>
         <binding>
           <command>nasal</command>
-          <script># TODO</script>
+          <script>
+            setprop("/ai-atc/request/type", "pushback");
+            setprop("/ai-atc/response/ready", 0);
+            setprop("/ai-atc/status", "processing");
+            setprop("/ai-atc/request/trigger", 1);
+          </script>
         </binding>
       </button>
+
       <button>
-        <!-- TODO: set /ai-atc/request/type="takeoff" and trigger -->
-        <legend>Request Takeoff</legend>
+        <legend>Taxi</legend>
         <binding>
           <command>nasal</command>
-          <script># TODO</script>
+          <script>
+            setprop("/ai-atc/request/type", "taxi");
+            setprop("/ai-atc/response/ready", 0);
+            setprop("/ai-atc/status", "processing");
+            setprop("/ai-atc/request/trigger", 1);
+          </script>
         </binding>
       </button>
+
+      <button>
+        <legend>Takeoff</legend>
+        <binding>
+          <command>nasal</command>
+          <script>
+            setprop("/ai-atc/request/type", "takeoff");
+            setprop("/ai-atc/response/ready", 0);
+            setprop("/ai-atc/status", "processing");
+            setprop("/ai-atc/request/trigger", 1);
+          </script>
+        </binding>
+      </button>
+
+      <button>
+        <legend>Cancel</legend>
+        <binding>
+          <command>nasal</command>
+          <script>
+            setprop("/ai-atc/request/type", "cancel");
+            setprop("/ai-atc/request/trigger", 1);
+          </script>
+        </binding>
+      </button>
+
       <button>
         <legend>Close</legend>
         <binding>
