@@ -80,3 +80,36 @@ def test_phrase_online_empty_text_falls_back() -> None:
     client = _FakeClient(response=PhraseResult(text="   "))
     c = Clearance(callsign="UAL123", clearance_type="pushback")
     assert phrase_online(c, client) == phrase_offline(c)  # type: ignore[arg-type]
+
+
+# ---------------------------------------------------------------------------
+# Item 2: aircraft_type in prompt
+# ---------------------------------------------------------------------------
+
+
+def test_build_prompt_includes_aircraft_type_when_set() -> None:
+    """When aircraft_type is provided, the prompt contains it."""
+    from sidecar.phraseology import _build_prompt
+
+    c = Clearance(callsign="N12", clearance_type="taxi", aircraft_type="c172p")
+    prompt = _build_prompt(c)
+    assert "c172p" in prompt
+    assert "aircraft type" in prompt
+
+
+def test_build_prompt_omits_aircraft_type_line_when_empty() -> None:
+    """When aircraft_type is empty, no aircraft-type line appears in prompt."""
+    from sidecar.phraseology import _build_prompt
+
+    c = Clearance(callsign="N12", clearance_type="taxi", aircraft_type="")
+    prompt = _build_prompt(c)
+    assert "aircraft type" not in prompt
+
+
+def test_phrase_offline_ignores_aircraft_type() -> None:
+    """phrase_offline output is unchanged whether aircraft_type is set or not."""
+    c_no_type = Clearance(callsign="UAL1", clearance_type="taxi", active_runway="28R")
+    c_with_type = Clearance(
+        callsign="UAL1", clearance_type="taxi", active_runway="28R", aircraft_type="b738"
+    )
+    assert phrase_offline(c_no_type) == phrase_offline(c_with_type)

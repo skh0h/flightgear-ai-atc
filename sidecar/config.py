@@ -31,6 +31,8 @@ class Settings:
     log_level: str
     gemini_model_fast: str
     gemini_model_pro: str
+    metar_enabled: bool = True  # set METAR_ENABLED=0 to disable METAR fetches
+    session_log_path: str | None = None  # path to JSONL session log; None = off
 
 
 def load(env_path: str | None = None) -> Settings:
@@ -92,6 +94,13 @@ def load(env_path: str | None = None) -> Settings:
         "GEMINI_MODEL_PRO", "gemini-2.5-pro"
     ).strip()
 
+    # --- metar_enabled ---
+    metar_enabled = os.environ.get("METAR_ENABLED", "1").strip() not in ("0", "false", "no")
+
+    # --- session_log_path ---
+    raw_log_path = os.environ.get("SESSION_LOG_PATH", "").strip()
+    session_log_path: str | None = raw_log_path if raw_log_path else None
+
     return Settings(
         gemini_api_key=gemini_api_key,
         fg_telnet_host=fg_telnet_host,
@@ -101,4 +110,6 @@ def load(env_path: str | None = None) -> Settings:
         log_level=log_level,
         gemini_model_fast=gemini_model_fast,
         gemini_model_pro=gemini_model_pro,
+        metar_enabled=metar_enabled,
+        session_log_path=session_log_path,
     )

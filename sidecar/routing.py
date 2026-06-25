@@ -180,6 +180,58 @@ def route_taxiways(route: list[int], picture: AirportPicture) -> list[str]:
     return taxiways
 
 
+def route_coverage(
+    route: list[int], picture: AirportPicture
+) -> tuple[int, int, float]:
+    """Named-arc coverage of a routed node path.
+
+    Traverses the same arcs as :func:`route_taxiways` (no duplicate work).
+
+    Returns:
+        ``(named_arc_count, total_arc_count, ratio)`` where ``ratio`` is
+        ``named_arc_count / total_arc_count`` (0.0 when ``total_arc_count`` is 0).
+    """
+    if len(route) < 2:
+        return 0, 0, 0.0
+    seg_names: dict[tuple[int, int], str] = {}
+    for seg in picture.segments:
+        seg_names[(min(seg.begin, seg.end), max(seg.begin, seg.end))] = seg.name
+
+    total = 0
+    named = 0
+    for a, b in zip(route, route[1:]):
+        total += 1
+        if seg_names.get((min(a, b), max(a, b)), ""):
+            named += 1
+
+    ratio = named / total if total else 0.0
+    return named, total, ratio
+
+
+# Coverage gate thresholds (Item 1)
+_MIN_NAMED_SEGMENTS = 3
+_MIN_NAMED_RATIO = 0.30
+
+
+def taxiways_for_clearance(route: list[int], picture: AirportPicture) -> list[str]:
+    """Return the taxiway list to populate ``Clearance.taxi_route``.
+
+    Applies the coverage gate: include the ``via`` segments only when the path
+    has >= 3 named segments OR named arcs cover > 30% of the path.  Otherwise
+    returns an empty list so the renderer degrades to "taxi to runway XX".
+
+    This is the single centralised gate used by both ``main`` and
+    ``runway_selection``.
+    """
+    taxiways = route_taxiways(route, picture)
+    if not taxiways:
+        return []
+    named_count, total, ratio = route_coverage(route, picture)
+    if named_count >= _MIN_NAMED_SEGMENTS or ratio > _MIN_NAMED_RATIO:
+        return taxiways
+    return []
+
+
 def route_to_instructions(
     route: list[int], picture: AirportPicture, *, hold_short: str | None = None
 ) -> list[str]:

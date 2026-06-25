@@ -5,6 +5,9 @@
 google-genai==1.47.0
 python-dotenv==1.2.1
 pytest==8.4.2
+# pydantic is imported directly in sidecar code and tests; pin explicitly so
+# it does not depend on the transitive version pulled in by google-genai.
+pydantic>=2.13,<3
 # cryptography 49+ requires OpenSSL build toolchain not present on this Mac;
 # pin to last version shipping pre-built x86_64 macOS wheels.
 cryptography==43.0.3

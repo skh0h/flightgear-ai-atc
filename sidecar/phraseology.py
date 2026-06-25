@@ -21,6 +21,8 @@ class Clearance:
     """A ground clearance to be voiced to the pilot.
 
     ``taxi_route`` is the ordered list of taxiway names (e.g. ``["A", "B"]``).
+    ``aircraft_type`` is the sim aircraft ID (e.g. "c172p"); used to tailor the
+    online Gemini prompt when present; ignored by the offline template.
     """
 
     callsign: str
@@ -30,6 +32,7 @@ class Clearance:
     hold_short: str = ""
     frequency: str = ""
     remarks: str = ""
+    aircraft_type: str = ""  # optional; empty string = not available
 
 
 class PhraseResult(BaseModel):
@@ -71,11 +74,17 @@ def phrase_offline(clearance: Clearance) -> str:
 
 def _build_prompt(clearance: Clearance) -> str:
     route = ", ".join(clearance.taxi_route) if clearance.taxi_route else "(none)"
+    aircraft_line = (
+        f"- aircraft type: {clearance.aircraft_type}\n"
+        if clearance.aircraft_type
+        else ""
+    )
     return (
         "Render the following ground clearance as a single, natural, "
         "ICAO-standard ATC transmission. Return only the spoken text.\n"
         f"- callsign: {clearance.callsign}\n"
         f"- type: {clearance.clearance_type}\n"
+        f"{aircraft_line}"
         f"- taxiways: {route}\n"
         f"- active runway: {clearance.active_runway or '(none)'}\n"
         f"- hold short of: {clearance.hold_short or '(none)'}\n"

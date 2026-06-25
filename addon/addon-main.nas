@@ -53,6 +53,45 @@ var request = func(req_type) {
     append_log("[you] request " ~ req_type ~ " (" ~ callsign ~ ")");
 };
 
+# Publish runway + frequency data from airportinfo() into the /ai-atc/airport/
+# mailbox so the Python sidecar can read real runway/frequency data.
+var publish_airport_data = func(icao) {
+    if (icao == nil or icao == "") return;
+    var info = airportinfo(icao);
+    if (info == nil) return;
+
+    # Frequencies
+    var freqs = ["ground", "tower", "atis", "approach", "departure"];
+    foreach (var fname; freqs) {
+        var f = info.comms(fname);
+        if (f != nil and size(f) > 0) {
+            setprop(ROOT ~ "/airport/freq/" ~ fname, sprintf("%.2f", f[0].frequency / 1000.0));
+        }
+    }
+
+    # Runways
+    var rwy_list = info.runways;
+    if (rwy_list == nil) return;
+    var n = 0;
+    foreach (var rwy; keys(rwy_list)) {
+        var r = rwy_list[rwy];
+        var pfx = ROOT ~ "/airport/runway[" ~ n ~ "]";
+        setprop(pfx ~ "/id",      r.id);
+        setprop(pfx ~ "/heading", r.heading);
+        setprop(pfx ~ "/thr_lat", r.lat);
+        setprop(pfx ~ "/thr_lon", r.lon);
+        setprop(pfx ~ "/length",  r.length);
+        var ils = r.ils;
+        if (ils != nil) {
+            setprop(pfx ~ "/ils_freq", sprintf("%.2f", ils.frequency / 1000.0));
+        } else {
+            setprop(pfx ~ "/ils_freq", "");
+        }
+        n += 1;
+    }
+    setprop(ROOT ~ "/airport/runway_count", n);
+};
+
 var main = func(addon) {
     _set_defaults();
 
@@ -66,6 +105,10 @@ var main = func(addon) {
     append(_listeners, setlistener(ROOT ~ "/response/ready", func(n) {
         if (n.getBoolValue()) setprop(ROOT ~ "/status", "idle");
     }, 0, 0));
+
+    # Publish airport data for the current airport at startup
+    var icao = getprop("/sim/presets/airport-id");
+    publish_airport_data(icao);
 
     print("[AI ATC] addon loaded, version " ~ addon.version);
 };

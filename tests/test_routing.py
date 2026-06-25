@@ -9,7 +9,9 @@ from sidecar.parser_code import parse_groundnet
 from sidecar.routing import (
     find_route,
     nearest_node,
+    route_coverage,
     route_to_instructions,
+    taxiways_for_clearance,
 )
 
 _FIXTURE = Path(__file__).resolve().parent.parent / "fixtures" / "KSFO.groundnet.xml"
@@ -146,3 +148,94 @@ def test_nearest_node_filters_on_runway() -> None:
     assert idx is not None
     chosen = next(n for n in pic.nodes if n.index == idx)
     assert chosen.on_runway is True
+
+
+# ---------------------------------------------------------------------------
+# Coverage gate (Item 1)
+# ---------------------------------------------------------------------------
+
+
+def _dense_picture() -> AirportPicture:
+    """5-node chain, all 4 arcs named → named=4, total=4, ratio=1.0 (dense)."""
+    nodes = [Node(index=i, lat=0.0, lon=i * 0.001) for i in range(1, 6)]
+    segments = [
+        Segment(begin=1, end=2, name="A"),
+        Segment(begin=2, end=3, name="A"),
+        Segment(begin=3, end=4, name="B"),
+        Segment(begin=4, end=5, name="C"),
+    ]
+    return _picture(nodes, segments)
+
+
+def _sparse_picture() -> AirportPicture:
+    """5-node chain, 1 of 4 arcs named → named=1, total=4, ratio=0.25 (sparse)."""
+    nodes = [Node(index=i, lat=0.0, lon=i * 0.001) for i in range(1, 6)]
+    segments = [
+        Segment(begin=1, end=2, name=""),
+        Segment(begin=2, end=3, name=""),
+        Segment(begin=3, end=4, name="A"),  # only 1 named
+        Segment(begin=4, end=5, name=""),
+    ]
+    return _picture(nodes, segments)
+
+
+def test_route_coverage_empty_route() -> None:
+    pic = _dense_picture()
+    named, total, ratio = route_coverage([], pic)
+    assert named == 0 and total == 0 and ratio == 0.0
+
+
+def test_route_coverage_single_node() -> None:
+    pic = _dense_picture()
+    named, total, ratio = route_coverage([1], pic)
+    assert named == 0 and total == 0 and ratio == 0.0
+
+
+def test_route_coverage_dense() -> None:
+    pic = _dense_picture()
+    named, total, ratio = route_coverage([1, 2, 3, 4, 5], pic)
+    assert named == 4
+    assert total == 4
+    assert abs(ratio - 1.0) < 0.001
+
+
+def test_route_coverage_sparse() -> None:
+    pic = _sparse_picture()
+    named, total, ratio = route_coverage([1, 2, 3, 4, 5], pic)
+    assert named == 1
+    assert total == 4
+    assert abs(ratio - 0.25) < 0.001
+
+
+def test_taxiways_for_clearance_dense_keeps_via() -> None:
+    """Dense path (>= 3 named segments) → taxiways non-empty."""
+    pic = _dense_picture()
+    taxiways = taxiways_for_clearance([1, 2, 3, 4, 5], pic)
+    # 3 distinct names after collapsing: A, B, C — meets >= 3 gate
+    assert taxiways == ["A", "B", "C"]
+
+
+def test_taxiways_for_clearance_sparse_drops_via() -> None:
+    """Sparse path (1 named / 4 total = 25% < 30%, and < 3 named) → empty list."""
+    pic = _sparse_picture()
+    taxiways = taxiways_for_clearance([1, 2, 3, 4, 5], pic)
+    assert taxiways == []
+
+
+def test_taxiways_for_clearance_ratio_gate() -> None:
+    """Path with > 30% but < 3 named segments still qualifies via ratio gate."""
+    # 2-node path: 1 named arc out of 2 total → 50% > 30%, but only 1 named segment
+    nodes = [Node(index=i, lat=0.0, lon=i * 0.001) for i in range(1, 4)]
+    segments = [
+        Segment(begin=1, end=2, name="A"),  # named
+        Segment(begin=2, end=3, name=""),    # unnamed
+    ]
+    pic = _picture(nodes, segments)
+    # named=1, total=2, ratio=0.5 > 0.30 → gate passes
+    taxiways = taxiways_for_clearance([1, 2, 3], pic)
+    assert taxiways == ["A"]
+
+
+def test_taxiways_for_clearance_empty_route() -> None:
+    pic = _dense_picture()
+    assert taxiways_for_clearance([], pic) == []
