@@ -86,4 +86,4 @@ def test_ai_response_schema_excludes_computed_fields() -> None:
     assert "taxi_graph" not in fields
     assert "groundnet_hash" not in fields
     assert "generated_at" not in fields
-    assert {"parking", "nodes", "segments", "runways", "frequencies"} <= fields
+    assert "taxiway_labels" in fields

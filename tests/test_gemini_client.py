@@ -332,6 +332,33 @@ def test_retry_uses_backoff_sleep() -> None:
 
 
 # ---------------------------------------------------------------------------
+# (g) Unexpected exception type — must NOT be swallowed as OfflineError
+# ---------------------------------------------------------------------------
+
+
+def test_unexpected_exception_propagates_out_of_generate() -> None:
+    """An unexpected exception (not offline/retryable) re-raises as-is from generate().
+
+    generate() must not swallow arbitrary exceptions by wrapping them in
+    OfflineError — only known offline/transient errors get that treatment.
+    """
+
+    class _WeirdError(Exception):
+        """Some totally unexpected exception type."""
+
+    mock_models = MagicMock()
+    mock_models.generate_content.side_effect = _WeirdError("something unusual")
+    mock_client = MagicMock()
+    mock_client.models = mock_models
+
+    gc = GeminiClient(_make_settings())
+
+    with patch("sidecar.gemini_client.GeminiClient._get_client", return_value=mock_client):
+        with pytest.raises(_WeirdError, match="something unusual"):
+            gc.generate("prompt", _SampleSchema, _sleep=_noop_sleep)
+
+
+# ---------------------------------------------------------------------------
 # Default model selection
 # ---------------------------------------------------------------------------
 

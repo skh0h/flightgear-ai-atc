@@ -84,20 +84,29 @@ class Frequencies(BaseModel):
     departure: Optional[str] = None
 
 
+class SegmentLabel(BaseModel):
+    """A taxiway name assigned by the AI to a specific segment.
+
+    The ``begin``/``end`` pair identifies the segment (treated as undirected,
+    so either orientation matches).  Structured objects are more reliable than
+    tuple-keyed dicts for Gemini structured output.
+    """
+
+    begin: int
+    end: int
+    name: str
+
+
 class AIAirportResponse(BaseModel):
     """The structured output the Gemini model is asked to return.
 
-    Deliberately excludes ``icao``/``source`` (known to the caller) and the
-    computed-locally fields (``taxi_graph``, ``groundnet_hash``,
-    ``generated_at``).  Keeping int-keyed dicts out of the schema makes the
-    structured-output contract reliable.
+    The AI's sole job is labeling unnamed taxiway segments.  All geometry
+    (nodes, parking, runways, frequencies) is produced deterministically by
+    the code parser and never re-emitted by the model, avoiding the
+    output-token cap on large airports (e.g. KSFO: 1144 nodes, 3131 arcs).
     """
 
-    parking: list[ParkingSpot] = Field(default_factory=list)
-    nodes: list[Node] = Field(default_factory=list)
-    segments: list[Segment] = Field(default_factory=list)
-    runways: list[Runway] = Field(default_factory=list)
-    frequencies: Frequencies = Field(default_factory=Frequencies)
+    taxiway_labels: list[SegmentLabel] = Field(default_factory=list)
 
 
 class AirportPicture(BaseModel):

@@ -14,15 +14,14 @@ retry loop runs instantly without any real delays.
 
 from __future__ import annotations
 
-import json
 import time
 from collections.abc import Callable
-from typing import Any, TypeVar
+from typing import TYPE_CHECKING, TypeVar
 
 from sidecar.config import Settings
 
-# Lazy import guard — genai is only imported when the client is first used.
-# This lets the offline code path import this module without the SDK present.
+if TYPE_CHECKING:
+    from google import genai as _genai_type  # noqa: F401 (type-checking only)
 
 T = TypeVar("T")
 
@@ -48,13 +47,13 @@ class GeminiClient:
 
     def __init__(self, settings: Settings) -> None:
         self._settings = settings
-        self._client: Any = None  # populated lazily by _get_client()
+        self._client: _genai_type.Client | None = None  # populated lazily by _get_client()
 
     # ------------------------------------------------------------------
     # Internal helpers
     # ------------------------------------------------------------------
 
-    def _get_client(self) -> Any:
+    def _get_client(self) -> _genai_type.Client:
         """Return the cached genai.Client, creating it on first access.
 
         Raises:
@@ -83,8 +82,6 @@ class GeminiClient:
     @staticmethod
     def _is_offline(exc: Exception) -> bool:
         """Return True when the exception indicates Gemini is unreachable."""
-        import socket  # noqa: PLC0415
-
         try:
             from google.genai import errors  # noqa: PLC0415
 
@@ -97,14 +94,8 @@ class GeminiClient:
             pass
 
         # Transport-level failures (DNS, TCP) before HTTP is established.
-        return isinstance(
-            exc,
-            (
-                OSError,  # covers socket.error, ConnectionError, etc.
-                socket.error,
-                TimeoutError,
-            ),
-        )
+        # OSError already covers socket.error and ConnectionError as subclasses.
+        return isinstance(exc, (OSError, TimeoutError))
 
     # ------------------------------------------------------------------
     # Public API
