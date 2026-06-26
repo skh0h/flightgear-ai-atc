@@ -81,6 +81,15 @@
     <format>%s</format>
     <halign>left</halign>
   </text>
+  <!-- Live guardrail validation warning published by the sidecar to
+       /ai-atc/guardrail. Usually blank; non-empty means the sidecar flagged an
+       unsafe/ungrounded phraseology issue for this exchange. -->
+  <text>
+    <property>/ai-atc/guardrail</property>
+    <live type="bool">true</live>
+    <format>Guardrail: %s</format>
+    <halign>left</halign>
+  </text>
 
   <!-- ── Interaction mode (normal / student / checkride) ─────────── -->
   <!-- Each button writes /ai-atc/mode via aiatc.set_mode("..."); the sidecar
@@ -482,6 +491,41 @@
     </button>
   </group>
 
+  <!-- ── Weather requests ────────────────────────────────────────── -->
+  <!-- Request tokens consumed by the sidecar: windshear, pirep,
+       weather_deviation. Each fires aiatc.request("<token>") exactly like the
+       Departure/Arrival groups; the sidecar maps the token to phraseology. -->
+  <group>
+    <layout>hbox</layout>
+    <default-padding type="int">4</default-padding>
+    <halign>center</halign>
+    <text><label>Weather:  </label></text>
+    <button>
+      <legend>Windshear</legend>
+      <pref-width type="int">95</pref-width>
+      <binding>
+        <command>nasal</command>
+        <script>aiatc.request("windshear");</script>
+      </binding>
+    </button>
+    <button>
+      <legend>PIREP</legend>
+      <pref-width type="int">70</pref-width>
+      <binding>
+        <command>nasal</command>
+        <script>aiatc.request("pirep");</script>
+      </binding>
+    </button>
+    <button>
+      <legend>Wx Deviation</legend>
+      <pref-width type="int">110</pref-width>
+      <binding>
+        <command>nasal</command>
+        <script>aiatc.request("weather_deviation");</script>
+      </binding>
+    </button>
+  </group>
+
   <!-- ── Training: scenario / kneeboard / career ─────────────────── -->
   <!-- Request tokens consumed by the sidecar: scenario, kneeboard, career.
        Each fires aiatc.request("<token>") exactly like the Departure/Arrival
@@ -579,6 +623,68 @@
     <format>Readback: %s</format>
     <halign>left</halign>
   </text>
+
+  <!-- ── Language / region config ────────────────────────────────── -->
+  <!-- Writes /ai-atc/language and /ai-atc/region (read by the sidecar) via
+       aiatc.set_language("..") / aiatc.set_region(".."). The adjacent live
+       <text> shows the active values. Defaults are en/us. -->
+  <group>
+    <layout>hbox</layout>
+    <default-padding type="int">4</default-padding>
+    <halign>center</halign>
+    <text><label>Language:</label></text>
+    <button>
+      <legend>EN</legend>
+      <pref-width type="int">45</pref-width>
+      <binding>
+        <command>nasal</command>
+        <script>aiatc.set_language("en");</script>
+      </binding>
+    </button>
+    <button>
+      <legend>FR</legend>
+      <pref-width type="int">45</pref-width>
+      <binding>
+        <command>nasal</command>
+        <script>aiatc.set_language("fr");</script>
+      </binding>
+    </button>
+    <button>
+      <legend>DE</legend>
+      <pref-width type="int">45</pref-width>
+      <binding>
+        <command>nasal</command>
+        <script>aiatc.set_language("de");</script>
+      </binding>
+    </button>
+    <text><label>  Region:</label></text>
+    <button>
+      <legend>US</legend>
+      <pref-width type="int">45</pref-width>
+      <binding>
+        <command>nasal</command>
+        <script>aiatc.set_region("us");</script>
+      </binding>
+    </button>
+    <button>
+      <legend>UK</legend>
+      <pref-width type="int">45</pref-width>
+      <binding>
+        <command>nasal</command>
+        <script>aiatc.set_region("uk");</script>
+      </binding>
+    </button>
+    <text>
+      <property>/ai-atc/language</property>
+      <live type="bool">true</live>
+      <format>  (%s</format>
+    </text>
+    <text>
+      <property>/ai-atc/region</property>
+      <live type="bool">true</live>
+      <format>/%s)</format>
+    </text>
+  </group>
 
   <!-- ── About + Close ───────────────────────────────────────────── -->
   <text>

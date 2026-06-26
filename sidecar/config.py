@@ -49,6 +49,12 @@ class Settings:
     # Path to the JSON career-stats file.  Empty string (the default) disables
     # career persistence so the offline path is unaffected.
     career_path: str = ""  # CAREER_PATH: path to career-stats JSON ("" = off)
+    # --- Phase 10: multi-language (#42) + regional phraseology packs (#4) ---
+    # ``language`` flavours the ONLINE prompt only (offline templates stay
+    # English); ``region`` applies literal wording substitutions to rendered
+    # text.  Both default to the US-English baseline so behaviour is unchanged.
+    language: str = "en"  # LANGUAGE: ISO-639-1 code ("en" = default, no directive)
+    region: str = "us"  # REGION: regional phraseology pack ("us" = baseline)
 
 
 def load(env_path: str | None = None) -> Settings:
@@ -131,6 +137,10 @@ def load(env_path: str | None = None) -> Settings:
     # --- Phase 9: career persistence path (empty = off) ---
     career_path = os.environ.get("CAREER_PATH", "").strip()
 
+    # --- Phase 10: language + region (default to the US-English baseline) ---
+    language = os.environ.get("LANGUAGE", "en").strip().lower() or "en"
+    region = os.environ.get("REGION", "us").strip().lower() or "us"
+
     return Settings(
         gemini_api_key=gemini_api_key,
         fg_telnet_host=fg_telnet_host,
@@ -150,4 +160,6 @@ def load(env_path: str | None = None) -> Settings:
         whisper_bin=whisper_bin,
         radio_static=radio_static,
         career_path=career_path,
+        language=language,
+        region=region,
     )

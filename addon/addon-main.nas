@@ -14,6 +14,7 @@
 #                                          "squawk_7500" | "squawk_7600" | "squawk_7700"
 #                               info:      "ctaf" | "fss_briefing" | "simbrief" |
 #                                          "airspace_check"
+#                               weather:   "windshear" | "pirep" | "weather_deviation"
 #                               training:  "scenario" | "kneeboard" | "career"
 #   /ai-atc/request/callsign  (string) aircraft callsign, e.g. "N12345"
 #   /ai-atc/request/runway    (string) requested/active runway, e.g. "28R"
@@ -59,6 +60,14 @@
 #                               the sidecar (e.g. on a "kneeboard" / "scenario" /
 #                               "career" request); seeded blank by the add-on and shown
 #                               live in the dialog's read-only Kneeboard textbox
+#   /ai-atc/guardrail         (string) human-readable validation warning published by the
+#                               sidecar (e.g. unsafe/ungrounded phraseology); seeded blank
+#                               by the add-on and shown live in the dialog ("Guardrail: %s").
+#                               Usually blank — non-empty means the sidecar flagged an issue.
+#   /ai-atc/language          (string) UI/phraseology language code read by the sidecar
+#                               (default "en"); written by aiatc.set_language(...)
+#   /ai-atc/region            (string) phraseology region code read by the sidecar
+#                               (default "us"); written by aiatc.set_region(...)
 #
 # The Python sidecar polls /ai-atc/request/trigger over the FG telnet interface.
 # When triggered it reads context props, generates a clearance, writes
@@ -130,6 +139,15 @@ var _set_defaults = func {
     # "kneeboard" / "scenario" / "career" request); seeded blank so the dialog's
     # live read-only Kneeboard textbox renders before the first publish.
     setprop(ROOT ~ "/kneeboard", "");
+    # Guardrail validation warning published by the sidecar; seeded blank so the
+    # dialog's live "Guardrail: %s" binding renders before (and whenever there is
+    # no) validation issue. Usually blank.
+    setprop(ROOT ~ "/guardrail", "");
+    # Language + region config read by the sidecar; seeded with the contract
+    # defaults ("en"/"us") so the sidecar and the dialog's helpers both see
+    # well-formed values before the user changes them.
+    setprop(ROOT ~ "/language", "en");
+    setprop(ROOT ~ "/region", "us");
 };
 
 # Append one line to the scrolling transcript.
@@ -229,6 +247,26 @@ var set_runway_active = func(idx, on) {
 var set_mode = func(m) {
     if (m != "normal" and m != "student" and m != "checkride") m = "normal";
     setprop(ROOT ~ "/mode", m);
+};
+
+# Set the UI/phraseology language (e.g. "en", "fr", "de") read by the sidecar.
+# Exposed on globals.aiatc so the dialog's Language buttons (which run in the
+# global scope, not the add-on scope) can call aiatc.set_language("fr") etc. The
+# value is lower-cased and a nil/blank falls back to the contract default "en" so
+# the sidecar never sees an out-of-contract language value.
+var set_language = func(lang) {
+    if (lang == nil or lang == "") lang = "en";
+    setprop(ROOT ~ "/language", string.lc(lang));
+};
+
+# Set the phraseology region (e.g. "us", "uk") read by the sidecar. Exposed on
+# globals.aiatc so the dialog's Region buttons (which run in the global scope,
+# not the add-on scope) can call aiatc.set_region("uk") etc. The value is
+# lower-cased and a nil/blank falls back to the contract default "us" so the
+# sidecar never sees an out-of-contract region value.
+var set_region = func(reg) {
+    if (reg == nil or reg == "") reg = "us";
+    setprop(ROOT ~ "/region", string.lc(reg));
 };
 
 # Publish runway + frequency data from airportinfo() into the /ai-atc/airport/
@@ -454,7 +492,7 @@ var main = func(addon) {
     # Expose request() in the global namespace so dialog <command>nasal</command>
     # bindings (which run in the global scope, not the add-on scope) can reach it
     # via the short name  aiatc.request("pushback")  etc.
-    globals.aiatc = { request: request, ptt: ptt, set_runway_active: set_runway_active, set_mode: set_mode };
+    globals.aiatc = { request: request, ptt: ptt, set_runway_active: set_runway_active, set_mode: set_mode, set_language: set_language, set_region: set_region };
 
     # Surface each new clearance in the transcript as the sidecar writes it.
     append(_listeners, setlistener(ROOT ~ "/response/text", func(n) {

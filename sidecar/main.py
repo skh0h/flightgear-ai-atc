@@ -29,6 +29,8 @@ from collections.abc import Callable
 from sidecar import (
     career,
     coach,
+    guardrail,
+    i18n,
     kneeboard as kneeboard_mod,
     metar,
     parser_ai,
@@ -44,6 +46,7 @@ from sidecar.airport_picture import (
     Runway,
     TrafficSnapshot,
 )
+from sidecar.blackboard import Blackboard
 from sidecar.cache import PictureCache
 from sidecar.config import Settings, load
 from sidecar.fg_bridge import BridgeError, FGTelnetBridge
@@ -125,6 +128,12 @@ CHATTER = "/ai-atc/chatter"
 # --- Phase 9: gamification / training --------------------------------------
 # Sidecar writes the rendered kneeboard card here for the panel to display.
 KNEEBOARD = "/ai-atc/kneeboard"
+
+# --- Phase 10: advisory output guardrail (#49) ------------------------------
+# Sidecar writes any deterministic validation issues for the just-rendered
+# clearance here (newline-joined, "" when clean).  ADVISORY ONLY: the clearance
+# in RESP_TEXT is always published regardless of issues.
+GUARDRAIL = "/ai-atc/guardrail"
 
 
 def _is_true(value: str) -> bool:
@@ -434,6 +443,8 @@ class Sidecar:
         self.memory = SessionMemory()
         # Phase 7: advisory, forward-only flight-phase tracker (gate to gate).
         self.fsm = FlightStateMachine()
+        # Phase 10: shared world-state blackboard (advisory; refreshed per request).
+        self.blackboard = Blackboard()
         # Best-effort publish so the panel can show who is working the position.
         try:
             self.bridge.set(CONTROLLER_NAME, self.persona.name)
@@ -886,6 +897,27 @@ class Sidecar:
         except Exception:
             _log.debug("flight-phase update failed", exc_info=True)
 
+        # Phase 10: refresh the shared world-state blackboard (advisory only;
+        # never feeds back into the reply, so this can never break it).  Cheap,
+        # offline reads — no METAR/network fetch on the hot path.
+        try:
+            try:
+                tcount = int(str(self.bridge.get(TRAFFIC_COUNT) or "0").strip() or "0")
+            except (TypeError, ValueError):
+                tcount = 0
+            self.blackboard.update(
+                phase=self.fsm.phase,
+                airport=(self.bridge.get(AIRPORT_ID) or "").strip(),
+                traffic_count=tcount,
+                airspace_class=_clean_fg_str(self.bridge.get(AIRSPACE_CLASS) or "") or "G",
+                mode=(self.bridge.get(MODE) or "normal").strip().lower() or "normal",
+                controller=self.persona.name,
+                language=self.settings.language,
+                region=self.settings.region,
+            )
+        except Exception:
+            _log.debug("blackboard update failed", exc_info=True)
+
         if req_type == "cancel":
             self.bridge.set(STATUS, "idle")
             self.bridge.set(REQ_TRIGGER, 0)
@@ -977,6 +1009,7 @@ class Sidecar:
                     context=context,
                     persona=self.persona,
                     mood=mood,
+                    language=self.settings.language,
                 )
                 # Mode B: best-effort live traffic sequencing for taxi requests.
                 # Wrapped so any traffic failure NEVER breaks the clearance reply.
@@ -1007,6 +1040,30 @@ class Sidecar:
             self.bridge.set(STATUS, "idle")
             self.bridge.set(REQ_TRIGGER, 0)
             return
+
+        # Phase 10: regional wording substitution (#4) — best-effort; the
+        # default "us" pack (and any unknown region) is a no-op.  Applied to the
+        # final rendered text so the offline templates stay region-neutral.
+        try:
+            text = i18n.apply_region(text, self.settings.region)
+        except Exception:
+            _log.debug("region substitution failed", exc_info=True)
+
+        # Phase 10: advisory output guardrail (#49) — validate the rendered
+        # clearance and publish any issues.  ADVISORY ONLY: RESP_TEXT is still
+        # published regardless; a guardrail failure never blocks the reply.
+        try:
+            active_ids: list[str] = []
+            if picture is not None:
+                active_ids = [
+                    r.id for r in picture.runways if getattr(r, "active", False)
+                ]
+            result = guardrail.validate_clearance(
+                text, callsign=callsign, active_runways=active_ids or None
+            )
+            self.bridge.set(GUARDRAIL, "\n".join(result.issues) if result.issues else "")
+        except Exception:
+            _log.debug("guardrail validation failed", exc_info=True)
 
         # Remember this interaction so later transmissions have continuity.
         try:

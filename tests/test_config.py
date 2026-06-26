@@ -34,6 +34,8 @@ def _clean_env(monkeypatch: pytest.MonkeyPatch) -> None:
         "WHISPER_BIN",
         "RADIO_STATIC",
         "CAREER_PATH",
+        "LANGUAGE",
+        "REGION",
     ):
         monkeypatch.delenv(key, raising=False)
 
@@ -275,3 +277,40 @@ def test_career_path_from_env(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("CAREER_PATH", "/tmp/career.json")
     settings = load(env_path=None)
     assert settings.career_path == "/tmp/career.json"
+
+
+# ---------------------------------------------------------------------------
+# Phase 10: language (#42) + region (#4)
+# ---------------------------------------------------------------------------
+
+
+def test_language_and_region_default_to_us_english(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """With no env vars, language is 'en' and region is 'us' (the baseline)."""
+    _clean_env(monkeypatch)
+    settings = load(env_path=None)
+    assert settings.language == "en"
+    assert settings.region == "us"
+
+
+def test_language_and_region_from_env(monkeypatch: pytest.MonkeyPatch) -> None:
+    """LANGUAGE and REGION are parsed and lower-cased."""
+    _clean_env(monkeypatch)
+    monkeypatch.setenv("LANGUAGE", "FR")
+    monkeypatch.setenv("REGION", "UK")
+    settings = load(env_path=None)
+    assert settings.language == "fr"
+    assert settings.region == "uk"
+
+
+def test_empty_language_region_fall_back_to_defaults(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Empty LANGUAGE/REGION strings fall back to the 'en'/'us' defaults."""
+    _clean_env(monkeypatch)
+    monkeypatch.setenv("LANGUAGE", "")
+    monkeypatch.setenv("REGION", "")
+    settings = load(env_path=None)
+    assert settings.language == "en"
+    assert settings.region == "us"
