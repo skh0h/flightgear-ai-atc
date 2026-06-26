@@ -54,6 +54,17 @@ def phrase_offline(clearance: Clearance) -> str:
     elif ctype == "takeoff":
         runway = clearance.active_runway or "the active runway"
         sentence = f"{callsign}, runway {runway}, cleared for takeoff."
+    elif ctype == "approach":
+        runway = clearance.active_runway or "active runway"
+        sentence = f"{callsign}, expect approach runway {runway}."
+    elif ctype == "ils":
+        runway = clearance.active_runway or "active runway"
+        sentence = f"{callsign}, cleared ILS runway {runway} approach."
+    elif ctype == "airfield_in_sight":
+        runway = clearance.active_runway or "active runway"
+        sentence = f"{callsign}, cleared visual approach runway {runway}."
+    elif ctype == "radio_check":
+        sentence = f"{callsign}, reading you five by five."
     else:  # taxi (default)
         parts = [f"{callsign}, taxi"]
         if clearance.active_runway:

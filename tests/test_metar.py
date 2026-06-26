@@ -36,6 +36,21 @@ def test_parse_wind_variable_returns_none() -> None:
     assert _parse_wind("KSFO 241800Z VRB05KT 10SM SCT015 18/12 A2992") is None
 
 
+def test_parse_wind_mps() -> None:
+    """MPS (metres/second, Russia/China): 3 m/s -> 6 kt (3 * 1.94384 = 5.83 -> 6)."""
+    assert _parse_wind("UUEE 241753Z 24003MPS 9999 SCT020 05/02 Q1015") == (240.0, 6.0)
+
+
+def test_parse_wind_mps_gust_uses_steady() -> None:
+    """MPS with gust: steady 3 m/s -> 6 kt; gust (08 m/s) is discarded."""
+    assert _parse_wind("ZBAA 241753Z 24003G08MPS 9999 SCT020 05/02 Q1015") == (240.0, 6.0)
+
+
+def test_parse_wind_mps_calm() -> None:
+    """00000MPS -> (0.0, 0.0)."""
+    assert _parse_wind("UUEE 241753Z 00000MPS 9999 SCT020 05/02 Q1015") == (0.0, 0.0)
+
+
 def test_parse_wind_three_digit_speed() -> None:
     """Three-digit speed (> 99 kt, e.g. 100KT): rare but valid METAR."""
     assert _parse_wind("KDEN 010000Z 270100KT") == (270.0, 100.0)
@@ -60,6 +75,7 @@ _SAMPLE_METAR = "KSFO 241753Z 24015KT 10SM SKC 20/10 A2992"
 _SAMPLE_METAR_GUST = "EGLL 211220Z 27018G30KT 9999 FEW030 15/08 Q1012"
 _CALM_METAR = "KORD 121755Z 00000KT 10SM CLR 12/05 A3002"
 _VRB_METAR = "KSFO 241800Z VRB05KT 10SM SCT015 18/12 A2992"
+_SAMPLE_METAR_MPS = "UUEE 241753Z 24003MPS 9999 SCT020 05/02 Q1015"
 
 
 def _mock_urlopen(metar_text: str):
@@ -83,6 +99,14 @@ def test_get_wind_parses_gust(mock_urlopen) -> None:
     mock_urlopen.return_value = _mock_urlopen(_SAMPLE_METAR_GUST)
     result = get_wind("EGLL")
     assert result == (270.0, 18.0)
+
+
+@patch("sidecar.metar.urllib.request.urlopen")
+def test_get_wind_parses_mps(mock_urlopen) -> None:
+    """MPS METAR (Russia/China): 3 m/s converts to 6 kt."""
+    mock_urlopen.return_value = _mock_urlopen(_SAMPLE_METAR_MPS)
+    result = get_wind("UUEE")
+    assert result == (240.0, 6.0)
 
 
 @patch("sidecar.metar.urllib.request.urlopen")

@@ -134,9 +134,12 @@ Python `google-genai` SDK; model **Gemini 2.5 Flash** for phraseology (fast/chea
 - Spawn at an airport with groundnet data (e.g., KSFO); use the menu to request taxi; confirm the spoken + logged instruction names **real** taxiways and a valid route to the assigned runway.
 - **Offline test:** disable network → confirm the cached picture + template phraseology still produce a specific route (graceful degradation).
 
+## Committed specs (decision made, phasing TBD)
+
+- **Airport Configuration & Traffic Sequencing** — see `IDEAS.md` (committed spec). Mode A (user controls active runways, no AI); Mode B (read AI traffic, sequence user). High feasibility; no blocker on AI control problem.
+
 ## Open items / future phases (not in v1)
 
 - Microphone / speech-to-text ("talk to ATC").
-- Traffic awareness & sequencing via `/ai/models/` (the biggest Red Griffin gap).
 - Real-world procedure enrichment (SIDs/STARs) via Gemini + Google Search grounding.
 - Neural TTS voices (swap into `tts.py`).

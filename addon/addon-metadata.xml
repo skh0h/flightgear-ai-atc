@@ -1,32 +1,40 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <PropertyList>
   <meta>
+    <file-type type="string">FlightGear add-on metadata</file-type>
     <format-version type="int">1</format-version>
   </meta>
-  <identifier>org.flightgear.addons.aiatc</identifier>
-  <name>AI ATC</name>
-  <version>0.1.0</version>
-  <author>
-    <name>Andrew Khoh</name>
-    <email>andrew.khoh@gmail.com</email>
-  </author>
-  <license>
-    <designation>MIT</designation>
-  </license>
-  <url>https://github.com/andrewkhoh/flightgear-ai-atc</url>
-  <min-fg-version>2024.1.5</min-fg-version>
-  <short-description>AI-powered ATC clearances and taxi routing for FlightGear.</short-description>
-  <long-description>
-    Provides realistic ATC clearances, taxi routing, and phraseology using a Python
-    sidecar that communicates with the Gemini AI API when online and falls back to
-    deterministic groundnet.xml parsing when offline. Ground, tower, and ATIS
-    frequencies are read from FlightGear navdata. Taxi routes are computed via A*
-    over the airport groundnet graph and read aloud via macOS TTS.
-  </long-description>
-  <tags>
-    <tag>atc</tag>
-    <tag>ai</tag>
-    <tag>taxi</tag>
-    <tag>clearance</tag>
-  </tags>
+  <addon>
+    <identifier type="string">org.flightgear.addons.aiatc</identifier>
+    <name type="string">AI ATC</name>
+    <version type="string">0.1.0</version>
+    <authors>
+      <author>
+        <name type="string">Andrew Khoh</name>
+        <email type="string">andrew.khoh@gmail.com</email>
+      </author>
+    </authors>
+    <license>
+      <designation type="string">MIT</designation>
+    </license>
+    <short-description type="string">AI-powered ATC clearances and taxi routing for FlightGear.</short-description>
+    <long-description type="string">
+      Provides realistic ATC clearances, taxi routing, and phraseology using a Python
+      sidecar that communicates with the Gemini AI API when online and falls back to
+      deterministic groundnet.xml parsing when offline. Ground, tower, and ATIS
+      frequencies are read from FlightGear navdata. Taxi routes are computed via A*
+      over the airport groundnet graph and read aloud via macOS TTS.
+    </long-description>
+    <min-FG-version type="string">2020.0.0</min-FG-version>
+    <max-FG-version type="string">2099.0.0</max-FG-version>
+    <urls>
+      <code-repository type="string">https://github.com/andrewkhoh/flightgear-ai-atc</code-repository>
+    </urls>
+    <tags>
+      <tag type="string">atc</tag>
+      <tag type="string">ai</tag>
+      <tag type="string">taxi</tag>
+      <tag type="string">clearance</tag>
+    </tags>
+  </addon>
 </PropertyList>

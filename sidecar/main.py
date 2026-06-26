@@ -20,6 +20,7 @@ import datetime
 import hashlib
 import json
 import logging
+import math
 import signal
 import sys
 import time
@@ -50,6 +51,10 @@ POS_LAT = "/position/latitude-deg"
 POS_LON = "/position/longitude-deg"
 AIRCRAFT_ID = "/sim/aircraft-id"
 
+# --- sidecar heartbeat / mode (Task 2) — sidecar writes, Nasal reads --------
+HEARTBEAT = "/ai-atc/sidecar/heartbeat"
+SIDECAR_MODE = "/ai-atc/sidecar/mode"
+
 # --- airport data pipe (Item 3) — Nasal publishes here, sidecar reads -------
 AP_RUNWAY_COUNT = "/ai-atc/airport/runway_count"
 AP_RUNWAY_PREFIX = "/ai-atc/airport/runway"  # + "[N]/field"
@@ -69,6 +74,25 @@ def _to_float(value: str, default: float = 0.0) -> float:
         return float(str(value).strip())
     except (TypeError, ValueError):
         return default
+
+
+def _haversine_nm(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
+    """Great-circle distance in nautical miles between two lat/lon points."""
+    R_NM = 3440.065
+    phi1, phi2 = math.radians(lat1), math.radians(lat2)
+    dphi = math.radians(lat2 - lat1)
+    dlam = math.radians(lon2 - lon1)
+    a = math.sin(dphi / 2) ** 2 + math.cos(phi1) * math.cos(phi2) * math.sin(dlam / 2) ** 2
+    return R_NM * 2 * math.asin(math.sqrt(a))
+
+
+def _bearing_deg(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
+    """Initial bearing in degrees [0, 360) from (lat1, lon1) to (lat2, lon2)."""
+    phi1, phi2 = math.radians(lat1), math.radians(lat2)
+    dlam = math.radians(lon2 - lon1)
+    x = math.sin(dlam) * math.cos(phi2)
+    y = math.cos(phi1) * math.sin(phi2) - math.sin(phi1) * math.cos(phi2) * math.cos(dlam)
+    return (math.degrees(math.atan2(x, y)) + 360) % 360
 
 
 def groundnet_path_for(icao: str, *, base: str = "fixtures") -> str:
@@ -204,7 +228,10 @@ class Sidecar:
         cached = self.cache.get(icao, groundnet_hash)
         if cached is not None:
             return cached
-        picture = parser_ai.parse_with_ai(icao, groundnet_xml, self.client)
+        picture = parser_ai.parse_with_ai(
+            icao, groundnet_xml, self.client,
+            ai_taxiway_labels=self.settings.ai_taxiway_labels,
+        )
         self.cache.put(picture)
         return picture
 
@@ -262,6 +289,23 @@ class Sidecar:
                     taxiways = routing.taxiways_for_clearance(route, picture)
             except Exception:  # routing is best-effort; templates still work
                 _log.warning("route computation failed", exc_info=True)
+
+        # Arrival path: compute distance/bearing from aircraft to runway threshold
+        remarks = ""
+        if eff_type in ("approach", "ils", "airfield_in_sight"):
+            try:
+                lat = _to_float(self.bridge.get(POS_LAT))
+                lon = _to_float(self.bridge.get(POS_LON))
+                if picture is not None:
+                    for rwy in picture.runways:
+                        if rwy.thr_lat != 0.0 and rwy.thr_lon != 0.0:
+                            dist_nm = _haversine_nm(lat, lon, rwy.thr_lat, rwy.thr_lon)
+                            brg = _bearing_deg(lat, lon, rwy.thr_lat, rwy.thr_lon)
+                            remarks = f"{dist_nm:.0f} nm, {brg:.0f} degrees"
+                            break
+            except Exception:
+                _log.debug("distance/bearing computation failed", exc_info=True)
+
         return Clearance(
             callsign=eff_callsign,
             clearance_type=eff_type,
@@ -269,6 +313,7 @@ class Sidecar:
             active_runway=active_runway,
             hold_short=active_runway if eff_type == "taxi" else "",
             aircraft_type=aircraft_type,
+            remarks=remarks,
         )
 
     # ------------------------------------------------------------------
@@ -341,7 +386,9 @@ class Sidecar:
             text = phraseology.phrase_online(clearance, self.client)
         except Exception:
             _log.exception("failed to handle request")
-            self.bridge.set(STATUS, "error")
+            self.bridge.set(RESP_TEXT, "Stand by — unable to process that request.")
+            self.bridge.set(RESP_READY, 1)
+            self.bridge.set(STATUS, "idle")
             self.bridge.set(REQ_TRIGGER, 0)
             return
 
@@ -372,21 +419,40 @@ class Sidecar:
         interval: float = 0.1,
         max_iterations: int | None = None,
         _sleep: Callable[[float], None] = time.sleep,
+        heartbeat_interval: float = 5.0,
     ) -> None:
         """Poll the trigger property and dispatch requests.
 
         ``max_iterations`` bounds the loop for tests; ``None`` runs until
         :meth:`stop` or a signal.  Bridge errors are logged and retried on the
         next tick rather than crashing the loop.
+
+        Every ``heartbeat_interval`` seconds the loop increments
+        ``/ai-atc/sidecar/heartbeat`` and writes ``/ai-atc/sidecar/mode`` so
+        the Nasal add-on can detect whether the backend is alive.
         """
         self._running = True
         iterations = 0
+        heartbeat_counter = 0
+        elapsed_since_heartbeat = 0.0
         while self._running and (max_iterations is None or iterations < max_iterations):
             try:
                 if _is_true(self.bridge.get(REQ_TRIGGER)):
                     self.handle_trigger()
             except BridgeError:
                 _log.warning("bridge error during poll; will retry", exc_info=True)
+            elapsed_since_heartbeat += interval
+            if elapsed_since_heartbeat >= heartbeat_interval:
+                elapsed_since_heartbeat = 0.0
+                heartbeat_counter += 1
+                mode = "ai" if self.client is not None and getattr(
+                    self.settings, "gemini_api_key", None
+                ) else "offline"
+                try:
+                    self.bridge.set(HEARTBEAT, heartbeat_counter)
+                    self.bridge.set(SIDECAR_MODE, mode)
+                except BridgeError:
+                    pass  # heartbeat is best-effort
             iterations += 1
             _sleep(interval)
 
@@ -403,6 +469,55 @@ def build_sidecar(settings: Settings) -> Sidecar:
     return Sidecar(settings, bridge, client, cache, tts)
 
 
+def _run_selftest(*, telnet: bool = False) -> None:
+    """Print connectivity status for Gemini (and optionally telnet), then exit."""
+    import os  # noqa: PLC0415
+
+    settings = load()
+    logging.basicConfig(level=logging.WARNING)
+
+    # --- Gemini check --------------------------------------------------------
+    if not settings.gemini_api_key:
+        print("Gemini: offline (GEMINI_API_KEY not set)")
+        gemini_ok = False
+    else:
+        print("Gemini: checking...", end=" ", flush=True)
+        try:
+            from pydantic import BaseModel  # noqa: PLC0415
+
+            class _Ping(BaseModel):
+                ok: bool
+
+            client = GeminiClient(settings)
+            result = client.generate(
+                "Reply with JSON {\"ok\": true}",
+                _Ping,
+            )
+            if result.ok:
+                print("AI (connected)")
+                gemini_ok = True
+            else:
+                print("offline (unexpected response)")
+                gemini_ok = False
+        except Exception as exc:  # noqa: BLE001
+            print(f"offline ({type(exc).__name__}: {exc})")
+            gemini_ok = False
+
+    # --- Telnet check --------------------------------------------------------
+    if telnet:
+        print(f"Telnet: checking {settings.fg_telnet_host}:{settings.fg_telnet_port}...", end=" ", flush=True)
+        try:
+            bridge = FGTelnetBridge(settings.fg_telnet_host, settings.fg_telnet_port)
+            bridge.connect(retries=1, backoff=0.0)
+            val = bridge.get("/sim/aircraft-id")
+            bridge.close()
+            print(f"connected (aircraft={val!r})")
+        except BridgeError as exc:
+            print(f"not reachable ({exc})")
+
+    sys.exit(0 if gemini_ok else 1)
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description="FlightGear AI ATC sidecar")
     parser.add_argument(
@@ -410,12 +525,26 @@ def main() -> None:
         metavar="SESSION_JSONL",
         help="Replay a session log offline and diff against golden text; exits non-zero on any diff.",
     )
+    parser.add_argument(
+        "--selftest",
+        action="store_true",
+        help="Check Gemini connectivity and optionally round-trip one telnet property, then exit.",
+    )
+    parser.add_argument(
+        "--selftest-telnet",
+        action="store_true",
+        help="Also round-trip a telnet get during --selftest (requires FlightGear running).",
+    )
     args = parser.parse_args()
 
     if args.replay:
         from sidecar.replay import replay_session  # noqa: PLC0415
         diffs = replay_session(args.replay)
         sys.exit(1 if diffs else 0)
+
+    if args.selftest:
+        _run_selftest(telnet=args.selftest_telnet)
+        return
 
     settings = load()
     logging.basicConfig(level=getattr(logging, settings.log_level, logging.INFO))
@@ -432,6 +561,9 @@ def main() -> None:
     try:
         sidecar.bridge.connect()
         sidecar.bridge.set(STATUS, "idle")
+        mode = "ai" if settings.gemini_api_key else "offline"
+        sidecar.bridge.set(SIDECAR_MODE, mode)
+        sidecar.bridge.set(HEARTBEAT, 0)
         sidecar.poll_loop()
     except BridgeError as exc:
         _log.error("could not start sidecar: %s", exc)

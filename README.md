@@ -33,12 +33,30 @@ This add-on runs on **Windows and macOS**. The core sidecar (Python) and in-sim 
 - 🔊 **Text-to-Speech** — Native macOS TTS integration for immersive ATC experience (Windows support coming soon)
 - 🧠 **Schema Learning** — AI-assisted parser that learns from airport layouts (Phase 4)
 
+## Quick Start
+
+1. Install FlightGear 2024.1.5+ (macOS: `/Applications/FlightGear.app`; Windows: default Program Files location).
+2. Create the Python virtual environment and install dependencies:
+   ```
+   python3 -m venv .venv
+   .venv/bin/pip install -r requirements.txt   # macOS/Linux
+   .venv\Scripts\pip install -r requirements.txt  # Windows
+   ```
+3. Copy `.env.example` to `.env` and add your `GEMINI_API_KEY` (optional — works offline without it).
+4. **Double-click `scripts/run-mac.command`** (macOS) or **`scripts/run-windows.bat`** (Windows).
+   - Do NOT launch FlightGear from the app icon — the script is required to start both FlightGear with the correct flags (`--telnet=5501`) and the Python sidecar together.
+   - Sidecar output is logged to `sidecar.log` in the repo root for diagnostics.
+5. Once in-sim, open the **AI ATC** menu or press **Ctrl+Shift+T** for a taxi clearance.
+
+To check Gemini connectivity without starting FlightGear:
+```
+.venv/bin/python -m sidecar.main --selftest
+```
+
 ## Coming Soon
 
 More documentation is on the way. This section will include:
 
-- Installation & Setup
-- Quick Start Guide
 - Configuration Reference
 - Project Structure Overview
 - Development Workflow

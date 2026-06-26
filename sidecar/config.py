@@ -33,6 +33,11 @@ class Settings:
     gemini_model_pro: str
     metar_enabled: bool = True  # set METAR_ENABLED=0 to disable METAR fetches
     session_log_path: str | None = None  # path to JSONL session log; None = off
+    # AI-inferred taxiway names are unverified guesses — Gemini has no access to
+    # chart data, AIRAC, or any authoritative naming source.  Default False keeps
+    # ATC clearances grounded in real groundnet XML names only.  Enable only once
+    # Gemini is wired to an authoritative source (e.g. FAA NASR, Jeppesen charts).
+    ai_taxiway_labels: bool = False  # set AI_TAXIWAY_LABELS=1 to enable (unsafe)
 
 
 def load(env_path: str | None = None) -> Settings:
@@ -101,6 +106,9 @@ def load(env_path: str | None = None) -> Settings:
     raw_log_path = os.environ.get("SESSION_LOG_PATH", "").strip()
     session_log_path: str | None = raw_log_path if raw_log_path else None
 
+    # --- ai_taxiway_labels ---
+    ai_taxiway_labels = os.environ.get("AI_TAXIWAY_LABELS", "0").strip() in ("1", "true", "yes")
+
     return Settings(
         gemini_api_key=gemini_api_key,
         fg_telnet_host=fg_telnet_host,
@@ -112,4 +120,5 @@ def load(env_path: str | None = None) -> Settings:
         gemini_model_pro=gemini_model_pro,
         metar_enabled=metar_enabled,
         session_log_path=session_log_path,
+        ai_taxiway_labels=ai_taxiway_labels,
     )

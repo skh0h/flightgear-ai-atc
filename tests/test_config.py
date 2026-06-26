@@ -26,6 +26,7 @@ def _clean_env(monkeypatch: pytest.MonkeyPatch) -> None:
         "LOG_LEVEL",
         "GEMINI_MODEL_FAST",
         "GEMINI_MODEL_PRO",
+        "AI_TAXIWAY_LABELS",
     ):
         monkeypatch.delenv(key, raising=False)
 
@@ -181,3 +182,26 @@ def test_empty_host_raises(monkeypatch: pytest.MonkeyPatch) -> None:
 
     with pytest.raises(ConfigError, match="FG_TELNET_HOST"):
         load(env_path=None)
+
+
+def test_ai_taxiway_labels_defaults_false(monkeypatch: pytest.MonkeyPatch) -> None:
+    """ai_taxiway_labels must default to False (data-only / safe mode)."""
+    _clean_env(monkeypatch)
+    settings = load(env_path=None)
+    assert settings.ai_taxiway_labels is False
+
+
+def test_ai_taxiway_labels_enabled_by_env(monkeypatch: pytest.MonkeyPatch) -> None:
+    """AI_TAXIWAY_LABELS=1 enables the flag."""
+    _clean_env(monkeypatch)
+    monkeypatch.setenv("AI_TAXIWAY_LABELS", "1")
+    settings = load(env_path=None)
+    assert settings.ai_taxiway_labels is True
+
+
+def test_ai_taxiway_labels_not_enabled_by_zero(monkeypatch: pytest.MonkeyPatch) -> None:
+    """AI_TAXIWAY_LABELS=0 keeps the flag False."""
+    _clean_env(monkeypatch)
+    monkeypatch.setenv("AI_TAXIWAY_LABELS", "0")
+    settings = load(env_path=None)
+    assert settings.ai_taxiway_labels is False

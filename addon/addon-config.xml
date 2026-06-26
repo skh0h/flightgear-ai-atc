@@ -26,12 +26,7 @@
         <mod-ctrl type="bool">true</mod-ctrl>
         <binding>
           <command>nasal</command>
-          <script>
-            setprop("/ai-atc/request/type", "taxi");
-            setprop("/ai-atc/response/ready", 0);
-            setprop("/ai-atc/status", "processing");
-            setprop("/ai-atc/request/trigger", 1);
-          </script>
+          <script>aiatc.request("taxi");</script>
         </binding>
       </key>
     </keyboard>

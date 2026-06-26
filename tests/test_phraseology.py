@@ -113,3 +113,54 @@ def test_phrase_offline_ignores_aircraft_type() -> None:
         callsign="UAL1", clearance_type="taxi", active_runway="28R", aircraft_type="b738"
     )
     assert phrase_offline(c_no_type) == phrase_offline(c_with_type)
+
+
+# ---------------------------------------------------------------------------
+# Arrival types — offline templates
+# ---------------------------------------------------------------------------
+
+
+def test_phrase_offline_approach_exact() -> None:
+    c = Clearance(callsign="UAL1", clearance_type="approach", active_runway="28R")
+    assert phrase_offline(c) == "UAL1, expect approach runway 28R."
+
+
+def test_phrase_offline_ils_exact() -> None:
+    c = Clearance(callsign="DAL5", clearance_type="ils", active_runway="10L")
+    assert phrase_offline(c) == "DAL5, cleared ILS runway 10L approach."
+
+
+def test_phrase_offline_airfield_in_sight_exact() -> None:
+    c = Clearance(callsign="N12", clearance_type="airfield_in_sight", active_runway="01")
+    assert phrase_offline(c) == "N12, cleared visual approach runway 01."
+
+
+def test_phrase_offline_radio_check_exact() -> None:
+    c = Clearance(callsign="SWA9", clearance_type="radio_check")
+    assert phrase_offline(c) == "SWA9, reading you five by five."
+
+
+def test_phrase_offline_approach_no_runway() -> None:
+    """approach without active_runway falls back to 'active runway' placeholder."""
+    c = Clearance(callsign="UAL1", clearance_type="approach")
+    result = phrase_offline(c)
+    assert "UAL1" in result
+    assert "active runway" in result
+
+
+def test_phrase_offline_approach_with_remarks() -> None:
+    """remarks (e.g. distance/bearing) are appended after the approach clearance."""
+    c = Clearance(callsign="UAL1", clearance_type="approach", active_runway="28R", remarks="15 nm, 270 degrees")
+    result = phrase_offline(c)
+    assert result == "UAL1, expect approach runway 28R. 15 nm, 270 degrees"
+
+
+# ---------------------------------------------------------------------------
+# Arrival types — online → offline fallback
+# ---------------------------------------------------------------------------
+
+
+def test_phrase_online_falls_back_for_ils_on_offline_error() -> None:
+    client = _FakeClient(raise_offline=True)
+    c = Clearance(callsign="UAL1", clearance_type="ils", active_runway="28R")
+    assert phrase_online(c, client) == phrase_offline(c)  # type: ignore[arg-type]
