@@ -745,3 +745,99 @@ def test_handle_trigger_traffic_failure_still_writes_response(
     assert bridge.props[RESP_READY] == 1
     assert bridge.props[STATUS] == "idle"
     assert bridge.props[REQ_TRIGGER] == 0
+
+
+# ---------------------------------------------------------------------------
+# Phase 3: emergency & abnormal req_types end-to-end
+# ---------------------------------------------------------------------------
+
+
+_EMERGENCY_TYPES = [
+    "mayday",
+    "pan_pan",
+    "gear_emergency",
+    "min_fuel",
+    "diversion",
+    "go_around",
+    "squawk_7500",
+    "squawk_7600",
+    "squawk_7700",
+]
+
+
+@pytest.mark.parametrize("req_type", _EMERGENCY_TYPES)
+def test_handle_trigger_emergency_offline_template_exact(
+    tmp_path: Path, req_type: str
+) -> None:
+    """Full handle_trigger cycle (offline client) writes the exact offline template
+    for each emergency/abnormal req_type, and resets the mailbox state."""
+    from sidecar.phraseology import Clearance, phrase_offline
+
+    pic = _synthetic_picture()
+    props = {
+        AIRPORT_ID: pic.icao,
+        REQ_TYPE: req_type,
+        REQ_CALLSIGN: "UAL1",
+        REQ_RUNWAY: "",
+        POS_LAT: "37.620",
+        POS_LON: "-122.380",
+        REQ_TRIGGER: "1",
+    }
+    sidecar, bridge, backend = _make_with_picture(tmp_path, props, pic)
+    sidecar.handle_trigger()
+
+    expected = phrase_offline(Clearance(callsign="UAL1", clearance_type=req_type))
+    assert bridge.props[RESP_TEXT] == expected
+    assert bridge.props[RESP_READY] == 1
+    assert bridge.props[STATUS] == "idle"
+    assert bridge.props[REQ_TRIGGER] == 0
+    assert backend.said
+
+
+def test_handle_trigger_diversion_includes_nearest_airport(tmp_path: Path) -> None:
+    """When Nasal publishes nearest-airport icao+name, the diversion clearance
+    names that airport."""
+    from sidecar.main import NEAREST_AIRPORT_ICAO, NEAREST_AIRPORT_NAME
+
+    pic = _synthetic_picture()
+    props = {
+        AIRPORT_ID: pic.icao,
+        REQ_TYPE: "diversion",
+        REQ_CALLSIGN: "UAL1",
+        REQ_RUNWAY: "",
+        POS_LAT: "37.620",
+        POS_LON: "-122.380",
+        REQ_TRIGGER: "1",
+        NEAREST_AIRPORT_ICAO: "KSQL",
+        NEAREST_AIRPORT_NAME: "San Carlos",
+    }
+    sidecar, bridge, backend = _make_with_picture(tmp_path, props, pic)
+    sidecar.handle_trigger()
+
+    resp = bridge.props[RESP_TEXT]
+    assert "KSQL" in resp
+    assert "San Carlos" in resp
+    assert bridge.props[RESP_READY] == 1
+    assert bridge.props[REQ_TRIGGER] == 0
+
+
+def test_handle_trigger_diversion_generic_when_nearest_absent(tmp_path: Path) -> None:
+    """With no nearest-airport properties published, the diversion clearance
+    falls back to generic 'nearest suitable airport' wording (never raises)."""
+    pic = _synthetic_picture()
+    props = {
+        AIRPORT_ID: pic.icao,
+        REQ_TYPE: "diversion",
+        REQ_CALLSIGN: "UAL1",
+        REQ_RUNWAY: "",
+        POS_LAT: "37.620",
+        POS_LON: "-122.380",
+        REQ_TRIGGER: "1",
+    }
+    sidecar, bridge, backend = _make_with_picture(tmp_path, props, pic)
+    sidecar.handle_trigger()
+
+    resp = bridge.props[RESP_TEXT]
+    assert "nearest suitable airport" in resp
+    assert bridge.props[RESP_READY] == 1
+    assert bridge.props[REQ_TRIGGER] == 0

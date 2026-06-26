@@ -1,7 +1,12 @@
 # addon-main.nas — AI ATC addon entry point
 #
 # /ai-atc/ property mailbox:
-#   /ai-atc/request/type      (string) "pushback" | "taxi" | "takeoff" | "cancel"
+#   /ai-atc/request/type      (string) request token, e.g.:
+#                               departure: "pushback" | "taxi" | "takeoff" | "cancel"
+#                               arrival:   "approach" | "ils" | "airfield_in_sight" | "radio_check"
+#                               emergency: "mayday" | "pan_pan" | "gear_emergency" |
+#                                          "min_fuel" | "diversion" | "go_around" |
+#                                          "squawk_7500" | "squawk_7600" | "squawk_7700"
 #   /ai-atc/request/callsign  (string) aircraft callsign, e.g. "N12345"
 #   /ai-atc/request/runway    (string) requested/active runway, e.g. "28R"
 #   /ai-atc/request/trigger   (bool)   set to 1 to fire the request; sidecar resets to 0
@@ -41,6 +46,10 @@ var _set_defaults = func {
     setprop(ROOT ~ "/backend", "Not running — launch run-mac.command");
     setprop(ROOT ~ "/airport/icao", "");
     setprop(ROOT ~ "/airport/name", "");
+    # Best-effort nearest-airport publication for 'diversion' phrasing. Seeded
+    # empty so the sidecar always sees well-formed (possibly blank) props.
+    setprop(ROOT ~ "/nearest-airport/icao", "");
+    setprop(ROOT ~ "/nearest-airport/name", "");
     # Mode B live traffic display — seed so the dialog's live bindings render
     # before the sidecar writes the first sequencing summary.
     setprop(ROOT ~ "/traffic/summary", "");
@@ -202,6 +211,27 @@ var publish_airport_data = func(icao) {
     setprop(ROOT ~ "/airport/runway_count", n);
 };
 
+# Best-effort: publish the nearest airport to /ai-atc/nearest-airport/{icao,name}
+# so the sidecar can phrase a 'diversion' request as "...divert to KSQL San
+# Carlos...". Uses FlightGear's airport DB (geo.aircraft_position +
+# findAirportsWithinRange, which returns nearest-first). The whole body runs
+# inside a call() guard: if any of those APIs are unavailable this simply does
+# nothing and never throws, leaving the seeded "" defaults in place.
+var publish_nearest_airport = func {
+    var _err = [];
+    call(func {
+        var pos = geo.aircraft_position();
+        if (pos == nil) return;
+        var list = findAirportsWithinRange(pos, 100);
+        if (list == nil or size(list) == 0) return;
+        var ap = list[0];   # nearest-first ordering
+        if (ap == nil) return;
+        if (ap.id != nil)   setprop(ROOT ~ "/nearest-airport/icao", ap.id);
+        if (ap.name != nil) setprop(ROOT ~ "/nearest-airport/name", ap.name);
+    }, nil, _err);
+    # _err intentionally ignored — nearest-airport data is optional.
+};
+
 # ---------------------------------------------------------------------------
 # Backend heartbeat watcher — updates /ai-atc/backend status string.
 # ---------------------------------------------------------------------------
@@ -262,6 +292,7 @@ var main = func(addon) {
         var icao = n.getValue();
         if (icao != nil and icao != "") {
             publish_airport_data(icao);
+            publish_nearest_airport();   # best-effort; never throws
         }
     }, 0, 0));
 
@@ -272,6 +303,7 @@ var main = func(addon) {
     # Publish airport data for the current airport at startup.
     var icao = getprop("/sim/presets/airport-id");
     publish_airport_data(icao);
+    publish_nearest_airport();   # best-effort nearest-airport for diversions
 
     # Initial backend status check.
     _update_backend_status();

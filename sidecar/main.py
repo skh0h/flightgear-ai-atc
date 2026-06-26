@@ -56,6 +56,10 @@ POS_LAT = "/position/latitude-deg"
 POS_LON = "/position/longitude-deg"
 AIRCRAFT_ID = "/sim/aircraft-id"
 
+# --- diversion: nearest-airport contract (Nasal publishes, sidecar reads) ----
+NEAREST_AIRPORT_ICAO = "/ai-atc/nearest-airport/icao"
+NEAREST_AIRPORT_NAME = "/ai-atc/nearest-airport/name"
+
 # --- sidecar heartbeat / mode (Task 2) — sidecar writes, Nasal reads --------
 HEARTBEAT = "/ai-atc/sidecar/heartbeat"
 SIDECAR_MODE = "/ai-atc/sidecar/mode"
@@ -445,6 +449,17 @@ class Sidecar:
             except Exception:
                 _log.debug("distance/bearing computation failed", exc_info=True)
 
+        # Diversion path: best-effort nearest-airport lookup published by Nasal.
+        divert_target = ""
+        if eff_type == "diversion":
+            try:
+                d_icao = _clean_fg_str(self.bridge.get(NEAREST_AIRPORT_ICAO) or "")
+                d_name = _clean_fg_str(self.bridge.get(NEAREST_AIRPORT_NAME) or "")
+                if d_icao:
+                    divert_target = f"{d_icao} {d_name}".strip()
+            except Exception:
+                _log.debug("nearest-airport read failed", exc_info=True)
+
         return Clearance(
             callsign=eff_callsign,
             clearance_type=eff_type,
@@ -453,6 +468,7 @@ class Sidecar:
             hold_short=active_runway if eff_type == "taxi" else "",
             aircraft_type=aircraft_type,
             remarks=remarks,
+            divert_target=divert_target,
         )
 
     # ------------------------------------------------------------------

@@ -33,6 +33,7 @@ class Clearance:
     frequency: str = ""
     remarks: str = ""
     aircraft_type: str = ""  # optional; empty string = not available
+    divert_target: str = ""  # optional; "ICAO Name" for a diversion clearance
 
 
 class PhraseResult(BaseModel):
@@ -75,6 +76,49 @@ def phrase_offline(clearance: Clearance) -> str:
         sentence = f"{callsign}, cleared visual approach runway {runway}."
     elif ctype == "radio_check":
         sentence = f"{callsign}, reading you five by five."
+    elif ctype == "mayday":
+        sentence = (
+            f"{callsign}, roger mayday. State souls on board, fuel remaining, "
+            f"and intentions."
+        )
+    elif ctype == "pan_pan":
+        sentence = f"{callsign}, roger pan-pan, say intentions."
+    elif ctype == "gear_emergency":
+        runway = _safe_rwy(clearance.active_runway) or "the active runway"
+        sentence = (
+            f"{callsign}, roger. Emergency services are standing by, "
+            f"cleared to land runway {runway}."
+        )
+    elif ctype == "min_fuel":
+        sentence = (
+            f"{callsign}, roger minimum fuel, you are number one for the approach."
+        )
+    elif ctype == "diversion":
+        target = clearance.divert_target or "the nearest suitable airport"
+        sentence = (
+            f"{callsign}, roger, cleared to divert to {target}, "
+            f"descend at pilot's discretion."
+        )
+    elif ctype == "go_around":
+        sentence = (
+            f"{callsign}, roger, going around, fly runway heading, "
+            f"climb to pattern altitude."
+        )
+    elif ctype == "squawk_7500":
+        sentence = (
+            f"{callsign}, roger, squawk seven five zero zero acknowledged, "
+            f"say intentions when able."
+        )
+    elif ctype == "squawk_7600":
+        sentence = (
+            f"{callsign}, radio failure acknowledged, squawk seven six zero zero, "
+            f"continue and look for light-gun signals."
+        )
+    elif ctype == "squawk_7700":
+        sentence = (
+            f"{callsign}, roger emergency, squawk seven seven zero zero, "
+            f"state nature of emergency and intentions."
+        )
     else:  # taxi (default)
         parts = [f"{callsign}, taxi"]
         if _safe_rwy(clearance.active_runway):
@@ -104,6 +148,15 @@ _TYPE_GUIDANCE = {
     "ils": "For an ILS approach, clear the aircraft for the ILS approach to the specified runway.",
     "airfield_in_sight": "When the airfield is in sight, clear the aircraft for a visual approach to the runway.",
     "radio_check": "For a radio check, reply with a readability report such as 'reading you five by five'.",
+    "mayday": "For a mayday distress call, acknowledge the emergency and ask the pilot to state souls on board, fuel remaining, and intentions.",
+    "pan_pan": "For a pan-pan urgency call, acknowledge the urgency and ask the pilot to say their intentions.",
+    "gear_emergency": "For a landing-gear emergency, advise that emergency services are standing by and clear the flight to land on the active runway.",
+    "min_fuel": "For a minimum-fuel advisory, acknowledge it and give the flight priority sequencing as number one for the approach.",
+    "diversion": "For a diversion, clear the flight to divert to the named alternate field or the nearest suitable airport and allow descent at the pilot's discretion.",
+    "go_around": "For a go-around, acknowledge it and instruct the pilot to fly runway heading and climb to the pattern altitude.",
+    "squawk_7500": "For a 7500 unlawful-interference squawk, keep the reply restrained, acknowledge the code, and ask for intentions when able.",
+    "squawk_7600": "For a 7600 radio-failure squawk, acknowledge lost communications, confirm the code, and tell the pilot to continue and watch for light-gun signals.",
+    "squawk_7700": "For a 7700 general-emergency squawk, acknowledge the emergency and ask the pilot to state the nature of the emergency and intentions.",
 }
 
 

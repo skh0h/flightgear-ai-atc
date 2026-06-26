@@ -210,6 +210,95 @@
     </button>
   </group>
 
+  <!-- ── Emergency / abnormal buttons ────────────────────────────── -->
+  <!-- Split across two hbox rows so the nine request buttons fit the dialog
+       width. Each button fires aiatc.request("<token>") exactly like the
+       Departure/Arrival groups; the sidecar maps the token to phraseology. -->
+  <group>
+    <layout>hbox</layout>
+    <default-padding type="int">4</default-padding>
+    <halign>center</halign>
+    <text><label>Emergency:</label></text>
+    <button>
+      <legend>Mayday</legend>
+      <pref-width type="int">70</pref-width>
+      <binding>
+        <command>nasal</command>
+        <script>aiatc.request("mayday");</script>
+      </binding>
+    </button>
+    <button>
+      <legend>Pan-Pan</legend>
+      <pref-width type="int">70</pref-width>
+      <binding>
+        <command>nasal</command>
+        <script>aiatc.request("pan_pan");</script>
+      </binding>
+    </button>
+    <button>
+      <legend>Gear Emergency</legend>
+      <pref-width type="int">115</pref-width>
+      <binding>
+        <command>nasal</command>
+        <script>aiatc.request("gear_emergency");</script>
+      </binding>
+    </button>
+    <button>
+      <legend>Min Fuel</legend>
+      <pref-width type="int">75</pref-width>
+      <binding>
+        <command>nasal</command>
+        <script>aiatc.request("min_fuel");</script>
+      </binding>
+    </button>
+    <button>
+      <legend>Diversion</legend>
+      <pref-width type="int">85</pref-width>
+      <binding>
+        <command>nasal</command>
+        <script>aiatc.request("diversion");</script>
+      </binding>
+    </button>
+  </group>
+  <group>
+    <layout>hbox</layout>
+    <default-padding type="int">4</default-padding>
+    <halign>center</halign>
+    <text><label>          </label></text>
+    <button>
+      <legend>Go-Around</legend>
+      <pref-width type="int">85</pref-width>
+      <binding>
+        <command>nasal</command>
+        <script>aiatc.request("go_around");</script>
+      </binding>
+    </button>
+    <button>
+      <legend>Sq 7500</legend>
+      <pref-width type="int">70</pref-width>
+      <binding>
+        <command>nasal</command>
+        <script>aiatc.request("squawk_7500");</script>
+      </binding>
+    </button>
+    <button>
+      <legend>Sq 7600</legend>
+      <pref-width type="int">70</pref-width>
+      <binding>
+        <command>nasal</command>
+        <script>aiatc.request("squawk_7600");</script>
+      </binding>
+    </button>
+    <button>
+      <legend>Sq 7700</legend>
+      <pref-width type="int">70</pref-width>
+      <binding>
+        <command>nasal</command>
+        <script>aiatc.request("squawk_7700");</script>
+      </binding>
+    </button>
+  </group>
+
   <!-- ── Transcript ──────────────────────────────────────────────── -->
   <textbox>
     <name>atc-log</name>

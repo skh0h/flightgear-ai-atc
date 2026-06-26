@@ -227,3 +227,145 @@ def test_build_prompt_includes_type_guidance_for_arrival() -> None:
     prompt = _build_prompt(c)
     assert _TYPE_GUIDANCE["approach"] in prompt
     assert "approach" in prompt
+
+
+# ---------------------------------------------------------------------------
+# Phase 3: emergency & abnormal phraseology — offline templates (exact)
+# ---------------------------------------------------------------------------
+
+
+def test_phrase_offline_mayday_exact() -> None:
+    c = Clearance(callsign="UAL123", clearance_type="mayday")
+    assert phrase_offline(c) == (
+        "UAL123, roger mayday. State souls on board, fuel remaining, and intentions."
+    )
+
+
+def test_phrase_offline_pan_pan_exact() -> None:
+    c = Clearance(callsign="N12", clearance_type="pan_pan")
+    assert phrase_offline(c) == "N12, roger pan-pan, say intentions."
+
+
+def test_phrase_offline_gear_emergency_exact() -> None:
+    c = Clearance(callsign="DAL2", clearance_type="gear_emergency", active_runway="28R")
+    assert phrase_offline(c) == (
+        "DAL2, roger. Emergency services are standing by, "
+        "cleared to land runway 28R."
+    )
+
+
+def test_phrase_offline_gear_emergency_no_runway_uses_placeholder() -> None:
+    c = Clearance(callsign="DAL2", clearance_type="gear_emergency")
+    result = phrase_offline(c)
+    assert "DAL2" in result
+    assert "the active runway" in result
+
+
+def test_phrase_offline_min_fuel_exact() -> None:
+    c = Clearance(callsign="SWA45", clearance_type="min_fuel")
+    assert phrase_offline(c) == (
+        "SWA45, roger minimum fuel, you are number one for the approach."
+    )
+
+
+def test_phrase_offline_diversion_with_target_exact() -> None:
+    c = Clearance(
+        callsign="UAL1", clearance_type="diversion", divert_target="KSQL San Carlos"
+    )
+    assert phrase_offline(c) == (
+        "UAL1, roger, cleared to divert to KSQL San Carlos, "
+        "descend at pilot's discretion."
+    )
+
+
+def test_phrase_offline_diversion_generic_exact() -> None:
+    c = Clearance(callsign="UAL1", clearance_type="diversion")
+    assert phrase_offline(c) == (
+        "UAL1, roger, cleared to divert to the nearest suitable airport, "
+        "descend at pilot's discretion."
+    )
+
+
+def test_phrase_offline_go_around_exact() -> None:
+    c = Clearance(callsign="DAL2", clearance_type="go_around")
+    assert phrase_offline(c) == (
+        "DAL2, roger, going around, fly runway heading, climb to pattern altitude."
+    )
+
+
+def test_phrase_offline_squawk_7500_exact() -> None:
+    c = Clearance(callsign="N12", clearance_type="squawk_7500")
+    assert phrase_offline(c) == (
+        "N12, roger, squawk seven five zero zero acknowledged, "
+        "say intentions when able."
+    )
+
+
+def test_phrase_offline_squawk_7600_exact() -> None:
+    c = Clearance(callsign="N12", clearance_type="squawk_7600")
+    assert phrase_offline(c) == (
+        "N12, radio failure acknowledged, squawk seven six zero zero, "
+        "continue and look for light-gun signals."
+    )
+
+
+def test_phrase_offline_squawk_7700_exact() -> None:
+    c = Clearance(callsign="N12", clearance_type="squawk_7700")
+    assert phrase_offline(c) == (
+        "N12, roger emergency, squawk seven seven zero zero, "
+        "state nature of emergency and intentions."
+    )
+
+
+# ---------------------------------------------------------------------------
+# Phase 3: emergencies — online return-text + offline-fallback
+# ---------------------------------------------------------------------------
+
+
+def test_phrase_online_returns_model_text_for_mayday() -> None:
+    client = _FakeClient(response=PhraseResult(text="United 123, roger mayday, say souls and fuel."))
+    c = Clearance(callsign="UAL123", clearance_type="mayday")
+    assert phrase_online(c, client) == "United 123, roger mayday, say souls and fuel."  # type: ignore[arg-type]
+    assert client.calls == 1
+
+
+def test_phrase_online_falls_back_for_mayday_on_offline_error() -> None:
+    client = _FakeClient(raise_offline=True)
+    c = Clearance(callsign="UAL123", clearance_type="mayday")
+    assert phrase_online(c, client) == phrase_offline(c)  # type: ignore[arg-type]
+
+
+def test_phrase_online_returns_model_text_for_diversion() -> None:
+    client = _FakeClient(response=PhraseResult(text="United 1, cleared to divert to Kilo Sierra Quebec Lima."))
+    c = Clearance(callsign="UAL1", clearance_type="diversion", divert_target="KSQL San Carlos")
+    assert phrase_online(c, client) == "United 1, cleared to divert to Kilo Sierra Quebec Lima."  # type: ignore[arg-type]
+    assert client.calls == 1
+
+
+def test_phrase_online_falls_back_for_diversion_on_offline_error() -> None:
+    client = _FakeClient(raise_offline=True)
+    c = Clearance(callsign="UAL1", clearance_type="diversion", divert_target="KSQL San Carlos")
+    assert phrase_online(c, client) == phrase_offline(c)  # type: ignore[arg-type]
+
+
+def test_phrase_online_returns_model_text_for_squawk_7700() -> None:
+    client = _FakeClient(response=PhraseResult(text="November 12, roger emergency, state your intentions."))
+    c = Clearance(callsign="N12", clearance_type="squawk_7700")
+    assert phrase_online(c, client) == "November 12, roger emergency, state your intentions."  # type: ignore[arg-type]
+    assert client.calls == 1
+
+
+def test_phrase_online_falls_back_for_squawk_7700_on_offline_error() -> None:
+    client = _FakeClient(raise_offline=True)
+    c = Clearance(callsign="N12", clearance_type="squawk_7700")
+    assert phrase_online(c, client) == phrase_offline(c)  # type: ignore[arg-type]
+
+
+def test_build_prompt_includes_type_guidance_for_emergency() -> None:
+    """_build_prompt appends the per-type ICAO guidance for an emergency type."""
+    from sidecar.phraseology import _TYPE_GUIDANCE, _build_prompt
+
+    c = Clearance(callsign="UAL1", clearance_type="mayday")
+    prompt = _build_prompt(c)
+    assert _TYPE_GUIDANCE["mayday"] in prompt
+    assert "aircraft type" not in prompt
