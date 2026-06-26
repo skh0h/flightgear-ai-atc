@@ -989,3 +989,115 @@ def test_build_prompt_includes_type_guidance_for_phase9_tokens() -> None:
         prompt = _build_prompt(c)
         assert _TYPE_GUIDANCE[ctype] in prompt
         assert "aircraft type" not in prompt
+
+
+# ---------------------------------------------------------------------------
+# Phase 10: windshear / pirep / weather_deviation — offline templates (exact),
+# online return/fallback, guidance, plus i18n language directive + region pack.
+# ---------------------------------------------------------------------------
+
+
+def test_phrase_offline_windshear_with_runway_exact() -> None:
+    c = Clearance(callsign="UAL1", clearance_type="windshear", active_runway="28R")
+    assert phrase_offline(c) == "UAL1, windshear alert, runway 28R, use caution."
+
+
+def test_phrase_offline_windshear_without_runway_exact() -> None:
+    c = Clearance(callsign="UAL1", clearance_type="windshear")
+    assert phrase_offline(c) == "UAL1, windshear alert in the vicinity, use caution."
+
+
+def test_phrase_offline_pirep_solicitation_exact() -> None:
+    """With no report supplied, a pirep solicits flight conditions."""
+    c = Clearance(callsign="N12", clearance_type="pirep")
+    assert phrase_offline(c) == "N12, say flight conditions, pilot report requested."
+
+
+def test_phrase_offline_pirep_acknowledgement_exact() -> None:
+    """With a report in remarks, a pirep acknowledges it without echoing it back."""
+    c = Clearance(
+        callsign="N12",
+        clearance_type="pirep",
+        remarks="moderate turbulence at flight level one eight zero",
+    )
+    out = phrase_offline(c)
+    assert out == "N12, roger, thank you for the pilot report."
+    # The raw report is NOT echoed back by the shared remarks tail.
+    assert "turbulence" not in out
+
+
+def test_phrase_offline_weather_deviation_exact() -> None:
+    c = Clearance(callsign="DAL2", clearance_type="weather_deviation")
+    assert phrase_offline(c) == (
+        "DAL2, weather deviation approved, advise when able to return on course."
+    )
+
+
+def test_phrase_online_returns_model_text_for_windshear() -> None:
+    client = _FakeClient(
+        response=PhraseResult(text="United 1, windshear alert, runway 28 right, caution.")
+    )
+    c = Clearance(callsign="UAL1", clearance_type="windshear", active_runway="28R")
+    assert phrase_online(c, client) == (  # type: ignore[arg-type]
+        "United 1, windshear alert, runway 28 right, caution."
+    )
+    assert client.calls == 1
+
+
+def test_phrase_online_falls_back_for_weather_deviation_on_offline_error() -> None:
+    client = _FakeClient(raise_offline=True)
+    c = Clearance(callsign="DAL2", clearance_type="weather_deviation")
+    assert phrase_online(c, client) == phrase_offline(c)  # type: ignore[arg-type]
+
+
+def test_build_prompt_includes_type_guidance_for_phase10_tokens() -> None:
+    from sidecar.phraseology import _TYPE_GUIDANCE, _build_prompt
+
+    for ctype in ("windshear", "pirep", "weather_deviation"):
+        c = Clearance(callsign="N12", clearance_type=ctype)
+        prompt = _build_prompt(c)
+        assert _TYPE_GUIDANCE[ctype] in prompt
+        assert "aircraft type" not in prompt
+
+
+def test_phrase_online_appends_language_directive_to_prompt() -> None:
+    """A non-English language appends an ICAO directive into the online prompt."""
+    captured: dict[str, str] = {}
+
+    class _CapturingClient:
+        def generate(self, prompt: str, schema: type, *, model: str | None = None) -> Any:
+            captured["prompt"] = prompt
+            return PhraseResult(text="ok")
+
+    c = Clearance(callsign="UAL1", clearance_type="taxi", active_runway="28R")
+    out = phrase_online(c, _CapturingClient(), language="fr")  # type: ignore[arg-type]
+    assert out == "ok"
+    assert "Respond in French using ICAO phraseology." in captured["prompt"]
+
+
+def test_phrase_online_default_language_leaves_prompt_unchanged() -> None:
+    """The default language='en' adds no directive (byte-identical prompt)."""
+    from sidecar.phraseology import _build_prompt
+
+    captured: dict[str, str] = {}
+
+    class _CapturingClient:
+        def generate(self, prompt: str, schema: type, *, model: str | None = None) -> Any:
+            captured["prompt"] = prompt
+            return PhraseResult(text="ok")
+
+    c = Clearance(callsign="UAL1", clearance_type="taxi", active_runway="28R")
+    phrase_online(c, _CapturingClient())  # type: ignore[arg-type]
+    assert captured["prompt"] == _build_prompt(c)
+
+
+def test_apply_region_uk_substitutes_active_runway() -> None:
+    """The UK region pack swaps US wording for British phraseology."""
+    from sidecar import i18n
+
+    text = "November 1, line up the active runway and report ready."
+    assert i18n.apply_region(text, "uk") == (
+        "November 1, line up the runway in use and report ready."
+    )
+    # The default US pack leaves the text untouched.
+    assert i18n.apply_region(text, "us") == text

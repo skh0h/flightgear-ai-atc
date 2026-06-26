@@ -13,6 +13,7 @@ from dataclasses import dataclass, field
 
 from pydantic import BaseModel
 
+from sidecar import i18n
 from sidecar.gemini_client import GeminiClient, OfflineError
 from sidecar.personality import ControllerPersona
 from sidecar.procedures import build_craft_clearance
@@ -258,6 +259,27 @@ def phrase_offline(clearance: Clearance) -> str:
             "career": "career stats updated.",
         }[ctype]
         return f"{callsign}, {body}"
+    elif ctype == "windshear":
+        # Windshear alert: warn the flight, naming the runway when known.
+        runway = _safe_rwy(clearance.active_runway)
+        if runway:
+            sentence = f"{callsign}, windshear alert, runway {runway}, use caution."
+        else:
+            sentence = f"{callsign}, windshear alert in the vicinity, use caution."
+    elif ctype == "pirep":
+        # PIREP: acknowledge a supplied pilot report (in remarks) with thanks,
+        # otherwise solicit flight conditions.  The acknowledgement returns early
+        # so the shared remarks tail does not echo the raw report back.
+        if clearance.remarks:
+            return f"{callsign}, roger, thank you for the pilot report."
+        sentence = f"{callsign}, say flight conditions, pilot report requested."
+    elif ctype == "weather_deviation":
+        # Weather deviation: approve the deviation and ask the pilot to advise
+        # when able to return on course.
+        sentence = (
+            f"{callsign}, weather deviation approved, "
+            f"advise when able to return on course."
+        )
     else:  # taxi (default)
         parts = [f"{callsign}, taxi"]
         if _safe_rwy(clearance.active_runway):
@@ -351,6 +373,9 @@ _TYPE_GUIDANCE = {
     "scenario": "For a training scenario, briefly announce the generated scenario conditions (airport, weather, wind, traffic, and any failure) to the pilot.",
     "kneeboard": "For a kneeboard update, tell the pilot their kneeboard with airport, wind, active runways, and frequencies is available.",
     "career": "For a career update, state the pilot's current rank and points total.",
+    "windshear": "For a windshear alert, warn the flight of the windshear on or near the runway and advise caution.",
+    "pirep": "For a pilot report, either solicit current flight conditions or acknowledge a received PIREP with thanks.",
+    "weather_deviation": "For a weather deviation request, approve the deviation around the weather and ask the pilot to advise when able to return on course.",
 }
 
 
@@ -444,6 +469,7 @@ def phrase_online(
     context: str = "",
     persona: ControllerPersona | None = None,
     mood: str = "",
+    language: str = "en",
 ) -> str:
     """Voice a clearance via Gemini, falling back to the offline template.
 
@@ -451,10 +477,18 @@ def phrase_online(
     network/auth/quota failure, retries exhausted) returns
     :func:`phrase_offline` instead.  The optional ``context``/``persona``/``mood``
     flavour the online prompt only — the offline fallback is unaffected.
+
+    ``language`` (#42) appends an ICAO-phraseology directive for a non-English
+    target language to the prompt ``context``.  The default ``"en"`` yields no
+    directive, so the prompt is byte-identical to the legacy output.
     """
+    eff_context = context
+    directive = i18n.language_directive(language)
+    if directive:
+        eff_context = f"{context}\n{directive}" if context else directive
     try:
         result = gemini_client.generate(
-            _build_prompt(clearance, context=context, persona=persona, mood=mood),
+            _build_prompt(clearance, context=eff_context, persona=persona, mood=mood),
             PhraseResult,
             model=model,
         )

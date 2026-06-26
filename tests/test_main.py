@@ -1578,3 +1578,143 @@ def test_handle_trigger_student_mode_readback_includes_coach_feedback(
     bridge2.props[REQ_TRIGGER] = "1"
     sc2.handle_trigger()
     assert "Check your readback" not in bridge2.props[RESP_TEXT]
+
+
+# ---------------------------------------------------------------------------
+# Phase 10: sidecar wiring — advisory guardrail, region pack, weather tokens
+# ---------------------------------------------------------------------------
+
+
+def test_handle_trigger_taxi_publishes_empty_guardrail(tmp_path: Path) -> None:
+    """A normal taxi clearance publishes a (clean, empty) /ai-atc/guardrail."""
+    from sidecar.main import GUARDRAIL
+
+    pic = _synthetic_picture()
+    props = {
+        AIRPORT_ID: pic.icao,
+        REQ_TYPE: "taxi",
+        REQ_CALLSIGN: "UAL9",
+        REQ_RUNWAY: "28L",
+        POS_LAT: "37.620",
+        POS_LON: "-122.380",
+        REQ_TRIGGER: "1",
+    }
+    sidecar, bridge, backend = _make_with_picture(tmp_path, props, pic)
+    sidecar.handle_trigger()
+
+    assert GUARDRAIL in bridge.props  # the guardrail is always published
+    assert bridge.props[GUARDRAIL] == ""  # nothing wrong with a normal taxi
+    assert bridge.props[RESP_TEXT] == "UAL9, taxi to runway 28L, hold short of 28L."
+    assert bridge.props[RESP_READY] == 1
+    assert bridge.props[REQ_TRIGGER] == 0
+
+
+def test_handle_trigger_guardrail_flags_nonactive_runway_but_still_replies(
+    tmp_path: Path,
+) -> None:
+    """A takeoff cleared on a NON-active runway publishes a non-empty guardrail
+    issue, yet STILL writes RESP_TEXT/RESP_READY (advisory, never blocking)."""
+    from sidecar.main import AP_RUNWAY_COUNT, AP_RUNWAY_PREFIX, GUARDRAIL
+
+    pic = _synthetic_picture()
+    props = {
+        AIRPORT_ID: pic.icao,
+        REQ_TYPE: "takeoff",
+        REQ_CALLSIGN: "UAL1",
+        REQ_RUNWAY: "10R",  # cleared for takeoff on 10R...
+        POS_LAT: "37.620",
+        POS_LON: "-122.380",
+        REQ_TRIGGER: "1",
+        # ...but the mailbox declares 28L as the only ACTIVE runway.
+        AP_RUNWAY_COUNT: "1",
+        f"{AP_RUNWAY_PREFIX}[0]/id": "28L",
+        f"{AP_RUNWAY_PREFIX}[0]/heading": "284",
+        f"{AP_RUNWAY_PREFIX}[0]/active": "1",
+    }
+    sidecar, bridge, backend = _make_with_picture(tmp_path, props, pic)
+    sidecar.handle_trigger()
+
+    issues = bridge.props.get(GUARDRAIL, "")
+    assert issues, "guardrail should flag the non-active runway clearance"
+    assert "10R" in issues
+    # Advisory only: the clearance is still issued and the UI is unblocked.
+    assert "cleared for takeoff" in bridge.props[RESP_TEXT].lower()
+    assert bridge.props[RESP_READY] == 1
+    assert bridge.props[STATUS] == "idle"
+    assert bridge.props[REQ_TRIGGER] == 0
+    assert backend.said
+
+
+def test_handle_trigger_region_uk_alters_offline_wording(tmp_path: Path) -> None:
+    """With region='uk', offline wording is substituted (active runway -> in use)."""
+    import dataclasses
+
+    from sidecar.main import GUARDRAIL
+
+    pic = _synthetic_picture()
+    props = {
+        AIRPORT_ID: pic.icao,
+        REQ_TYPE: "takeoff",
+        REQ_CALLSIGN: "UAL1",
+        REQ_RUNWAY: "",  # no runway -> 'the active runway' placeholder appears
+        POS_LAT: "37.620",
+        POS_LON: "-122.380",
+        REQ_TRIGGER: "1",
+    }
+    sidecar, bridge, backend = _make_with_picture(tmp_path, props, pic)
+    sidecar.settings = dataclasses.replace(sidecar.settings, region="uk")
+    sidecar.handle_trigger()
+
+    resp = bridge.props[RESP_TEXT]
+    assert "runway in use" in resp
+    assert "the active runway" not in resp
+    # Region substitution does not break the advisory guardrail or the mailbox.
+    assert GUARDRAIL in bridge.props
+    assert bridge.props[RESP_READY] == 1
+    assert bridge.props[REQ_TRIGGER] == 0
+
+
+def test_handle_trigger_windshear_token_renders_offline_template(tmp_path: Path) -> None:
+    """A windshear request flows through to the new offline phraseology template."""
+    pic = _synthetic_picture()
+    props = {
+        AIRPORT_ID: pic.icao,
+        REQ_TYPE: "windshear",
+        REQ_CALLSIGN: "UAL1",
+        REQ_RUNWAY: "28L",
+        POS_LAT: "37.620",
+        POS_LON: "-122.380",
+        REQ_TRIGGER: "1",
+    }
+    sidecar, bridge, backend = _make_with_picture(tmp_path, props, pic)
+    sidecar.handle_trigger()
+
+    assert bridge.props[RESP_TEXT] == "UAL1, windshear alert, runway 28L, use caution."
+    assert bridge.props[RESP_READY] == 1
+    assert bridge.props[STATUS] == "idle"
+    assert bridge.props[REQ_TRIGGER] == 0
+    assert backend.said
+
+
+def test_handle_trigger_updates_blackboard_snapshot(tmp_path: Path) -> None:
+    """handle_trigger refreshes the shared world-state blackboard each request."""
+    pic = _synthetic_picture()
+    props = {
+        AIRPORT_ID: pic.icao,
+        REQ_TYPE: "taxi",
+        REQ_CALLSIGN: "UAL9",
+        REQ_RUNWAY: "28L",
+        POS_LAT: "37.620",
+        POS_LON: "-122.380",
+        REQ_TRIGGER: "1",
+        MODE: "student",
+    }
+    sidecar, bridge, _ = _make_with_picture(tmp_path, props, pic)
+    sidecar.handle_trigger()
+
+    snap = sidecar.blackboard.snapshot()
+    assert snap["airport"] == pic.icao
+    assert snap["mode"] == "student"
+    assert snap["controller"] == sidecar.persona.name
+    assert snap["language"] == "en"
+    assert snap["region"] == "us"
