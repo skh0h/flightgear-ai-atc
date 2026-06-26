@@ -13,7 +13,10 @@ from sidecar.gemini_client import OfflineError
 from sidecar.main import (
     AIRCRAFT_ID,
     AIRPORT_ID,
+    CONTROLLER_NAME,
     HEARTBEAT,
+    LOCAL_HOUR,
+    MODE,
     POS_LAT,
     POS_LON,
     REQ_CALLSIGN,
@@ -841,3 +844,153 @@ def test_handle_trigger_diversion_generic_when_nearest_absent(tmp_path: Path) ->
     assert "nearest suitable airport" in resp
     assert bridge.props[RESP_READY] == 1
     assert bridge.props[REQ_TRIGGER] == 0
+
+
+# ---------------------------------------------------------------------------
+# Phase 4: personality, session memory, modes, position relief
+# ---------------------------------------------------------------------------
+
+
+def test_sidecar_publishes_controller_name_at_init(tmp_path: Path) -> None:
+    """Constructing a Sidecar publishes the persona name to CONTROLLER_NAME."""
+    pic = _synthetic_picture()
+    sidecar, bridge, _ = _make_with_picture(tmp_path, {AIRPORT_ID: pic.icao}, pic)
+    assert sidecar.persona.name, "persona should have a name"
+    assert bridge.props.get(CONTROLLER_NAME) == sidecar.persona.name
+
+
+def test_handle_trigger_remembers_interactions(tmp_path: Path) -> None:
+    """Each handled request grows the bounded session memory's count."""
+    pic = _synthetic_picture()
+    props = {
+        AIRPORT_ID: pic.icao,
+        REQ_TYPE: "taxi",
+        REQ_CALLSIGN: "UAL9",
+        REQ_RUNWAY: "28L",
+        POS_LAT: "37.620",
+        POS_LON: "-122.380",
+        REQ_TRIGGER: "1",
+    }
+    sidecar, bridge, _ = _make_with_picture(tmp_path, props, pic)
+    assert sidecar.memory.count == 0
+
+    sidecar.handle_trigger()
+    assert sidecar.memory.count == 1
+
+    bridge.props[REQ_TRIGGER] = "1"
+    sidecar.handle_trigger()
+    assert sidecar.memory.count == 2
+    # The remembered context should mention the callsign.
+    assert "UAL9" in sidecar.memory.recent_context()
+
+
+def test_handle_trigger_normal_mode_leaves_template_intact(tmp_path: Path) -> None:
+    """The default (normal) mode adds no coaching/readback nuance."""
+    pic = _synthetic_picture()
+    props = {
+        AIRPORT_ID: pic.icao,
+        REQ_TYPE: "taxi",
+        REQ_CALLSIGN: "UAL9",
+        REQ_RUNWAY: "28L",
+        POS_LAT: "37.620",
+        POS_LON: "-122.380",
+        REQ_TRIGGER: "1",
+    }
+    sidecar, bridge, _ = _make_with_picture(tmp_path, props, pic)
+    sidecar.handle_trigger()
+    assert bridge.props[RESP_TEXT] == "UAL9, taxi to runway 28L, hold short of 28L."
+
+
+def test_handle_trigger_student_mode_adds_coaching_remark(tmp_path: Path) -> None:
+    """student mode appends a coaching nuance that changes RESP_TEXT."""
+    pic = _synthetic_picture()
+    props = {
+        AIRPORT_ID: pic.icao,
+        REQ_TYPE: "taxi",
+        REQ_CALLSIGN: "UAL9",
+        REQ_RUNWAY: "28L",
+        POS_LAT: "37.620",
+        POS_LON: "-122.380",
+        REQ_TRIGGER: "1",
+        MODE: "student",
+    }
+    sidecar, bridge, _ = _make_with_picture(tmp_path, props, pic)
+    sidecar.handle_trigger()
+    resp = bridge.props[RESP_TEXT]
+    assert resp != "UAL9, taxi to runway 28L, hold short of 28L."
+    assert "Take your time" in resp
+    assert bridge.props[RESP_READY] == 1
+    assert bridge.props[REQ_TRIGGER] == 0
+
+
+def test_handle_trigger_checkride_mode_requests_readback(tmp_path: Path) -> None:
+    """checkride mode appends an explicit read-back instruction."""
+    pic = _synthetic_picture()
+    props = {
+        AIRPORT_ID: pic.icao,
+        REQ_TYPE: "taxi",
+        REQ_CALLSIGN: "UAL9",
+        REQ_RUNWAY: "28L",
+        POS_LAT: "37.620",
+        POS_LON: "-122.380",
+        REQ_TRIGGER: "1",
+        MODE: "checkride",
+    }
+    sidecar, bridge, _ = _make_with_picture(tmp_path, props, pic)
+    sidecar.handle_trigger()
+    assert "Read back all instructions." in bridge.props[RESP_TEXT]
+    assert bridge.props[RESP_READY] == 1
+
+
+def test_handle_trigger_local_hour_does_not_break_reply(tmp_path: Path) -> None:
+    """A late LOCAL_HOUR (quiet-night mood) must not disturb the clearance reply."""
+    pic = _synthetic_picture()
+    props = {
+        AIRPORT_ID: pic.icao,
+        REQ_TYPE: "taxi",
+        REQ_CALLSIGN: "UAL9",
+        REQ_RUNWAY: "28L",
+        POS_LAT: "37.620",
+        POS_LON: "-122.380",
+        REQ_TRIGGER: "1",
+        LOCAL_HOUR: "2",  # quiet night -> reflective mood
+    }
+    sidecar, bridge, _ = _make_with_picture(tmp_path, props, pic)
+    sidecar.handle_trigger()
+    # Offline client: mood only flavours the (unused) prompt, not the reply.
+    assert bridge.props[RESP_TEXT] == "UAL9, taxi to runway 28L, hold short of 28L."
+    assert bridge.props[RESP_READY] == 1
+
+
+def test_handle_trigger_relief_handoff_regenerates_and_briefs(tmp_path: Path) -> None:
+    """relief_handoff regenerates the persona, republishes the name, and briefs."""
+    pic = _synthetic_picture()
+    props = {
+        AIRPORT_ID: pic.icao,
+        REQ_TYPE: "taxi",
+        REQ_CALLSIGN: "UAL9",
+        REQ_RUNWAY: "28L",
+        POS_LAT: "37.620",
+        POS_LON: "-122.380",
+        REQ_TRIGGER: "1",
+    }
+    sidecar, bridge, backend = _make_with_picture(tmp_path, props, pic)
+    # One normal interaction so the briefing has recent activity to summarise.
+    sidecar.handle_trigger()
+
+    bridge.props[REQ_TYPE] = "relief_handoff"
+    bridge.props[REQ_CALLSIGN] = "UAL9"
+    bridge.props[REQ_TRIGGER] = "1"
+    sidecar.handle_trigger()
+
+    resp = bridge.props[RESP_TEXT]
+    # New controller name is republished and appears in the briefing.
+    assert bridge.props[CONTROLLER_NAME] == sidecar.persona.name
+    assert sidecar.persona.name in resp
+    assert "taking over the position" in resp
+    # Briefing recaps the earlier taxi interaction.
+    assert "UAL9" in resp
+    assert bridge.props[RESP_READY] == 1
+    assert bridge.props[STATUS] == "idle"
+    assert bridge.props[REQ_TRIGGER] == 0
+    assert backend.said

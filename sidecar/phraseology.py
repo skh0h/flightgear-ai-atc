@@ -14,6 +14,7 @@ from dataclasses import dataclass, field
 from pydantic import BaseModel
 
 from sidecar.gemini_client import GeminiClient, OfflineError
+from sidecar.personality import ControllerPersona
 
 
 @dataclass
@@ -119,6 +120,11 @@ def phrase_offline(clearance: Clearance) -> str:
             f"{callsign}, roger emergency, squawk seven seven zero zero, "
             f"state nature of emergency and intentions."
         )
+    elif ctype == "relief_handoff":
+        sentence = (
+            f"{callsign}, position relief in progress, "
+            f"controller change on the frequency."
+        )
     else:  # taxi (default)
         parts = [f"{callsign}, taxi"]
         if _safe_rwy(clearance.active_runway):
@@ -157,10 +163,47 @@ _TYPE_GUIDANCE = {
     "squawk_7500": "For a 7500 unlawful-interference squawk, keep the reply restrained, acknowledge the code, and ask for intentions when able.",
     "squawk_7600": "For a 7600 radio-failure squawk, acknowledge lost communications, confirm the code, and tell the pilot to continue and watch for light-gun signals.",
     "squawk_7700": "For a 7700 general-emergency squawk, acknowledge the emergency and ask the pilot to state the nature of the emergency and intentions.",
+    "relief_handoff": "For a position relief, briefly introduce the relieving controller and summarise recent activity for continuity.",
 }
 
 
-def _build_prompt(clearance: Clearance) -> str:
+def _persona_context_block(
+    *,
+    context: str = "",
+    persona: ControllerPersona | None = None,
+    mood: str = "",
+) -> str:
+    """Build the optional Controller/Mood/Session suffix for the online prompt.
+
+    Returns ``""`` when nothing is supplied so the prompt is byte-identical to
+    the legacy output; otherwise returns one trailing block of lines.
+    """
+    lines: list[str] = []
+    if persona is not None:
+        name = getattr(persona, "name", "") or ""
+        style = getattr(persona, "style", "") or ""
+        if name and style:
+            lines.append(f"Controller: {name}, {style}.")
+        elif name:
+            lines.append(f"Controller: {name}.")
+        elif style:
+            lines.append(f"Controller: {style}.")
+    if mood:
+        lines.append(f"Mood: {mood}.")
+    if context:
+        lines.append(f"Session so far:\n{context}")
+    if not lines:
+        return ""
+    return "\n".join(lines) + "\n"
+
+
+def _build_prompt(
+    clearance: Clearance,
+    *,
+    context: str = "",
+    persona: ControllerPersona | None = None,
+    mood: str = "",
+) -> str:
     route = ", ".join(clearance.taxi_route) if clearance.taxi_route else "(none)"
     aircraft_line = (
         f"- aircraft type: {clearance.aircraft_type}\n"
@@ -169,6 +212,9 @@ def _build_prompt(clearance: Clearance) -> str:
     )
     guidance = _TYPE_GUIDANCE.get((clearance.clearance_type or "").lower(), "")
     guidance_line = f"Guidance: {guidance}\n" if guidance else ""
+    # Optional persona/mood/session suffix. When all args are empty/None the
+    # block is "" and the prompt is byte-identical to the legacy output.
+    extra = _persona_context_block(context=context, persona=persona, mood=mood)
     return (
         "Render the following ground clearance as a single, natural, "
         "ICAO-standard ATC transmission. Return only the spoken text.\n"
@@ -181,6 +227,7 @@ def _build_prompt(clearance: Clearance) -> str:
         f"- frequency: {clearance.frequency or '(none)'}\n"
         f"- remarks: {clearance.remarks or '(none)'}\n"
         f"{guidance_line}"
+        f"{extra}"
     )
 
 
@@ -189,16 +236,22 @@ def phrase_online(
     gemini_client: GeminiClient,
     *,
     model: str | None = None,
+    context: str = "",
+    persona: ControllerPersona | None = None,
+    mood: str = "",
 ) -> str:
     """Voice a clearance via Gemini, falling back to the offline template.
 
     Returns the model's text on success; on any ``OfflineError`` (missing key,
     network/auth/quota failure, retries exhausted) returns
-    :func:`phrase_offline` instead.
+    :func:`phrase_offline` instead.  The optional ``context``/``persona``/``mood``
+    flavour the online prompt only — the offline fallback is unaffected.
     """
     try:
         result = gemini_client.generate(
-            _build_prompt(clearance), PhraseResult, model=model
+            _build_prompt(clearance, context=context, persona=persona, mood=mood),
+            PhraseResult,
+            model=model,
         )
     except OfflineError:
         return phrase_offline(clearance)
