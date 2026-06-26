@@ -143,6 +143,46 @@ def phrase_offline(clearance: Clearance) -> str:
     return sentence
 
 
+def expected_readback(clearance: Clearance) -> str:
+    """Return the canonical pilot readback string for a clearance.
+
+    This is the *pilot's* read-back of the controller's instruction — the
+    salient tokens only (runway, route, hold-short, the action), with no
+    callsign and no courtesy words — suitable for deterministic grading by
+    :func:`sidecar.stt.grade_readback`.
+
+    Examples:
+        taxi:    ``"runway 28R via A B hold short 28R"``
+        takeoff: ``"cleared for takeoff 28R"``
+    """
+    ctype = (clearance.clearance_type or "taxi").lower()
+    rwy = _safe_rwy(clearance.active_runway)
+
+    if ctype == "taxi":
+        parts: list[str] = []
+        if rwy:
+            parts.append(f"runway {rwy}")
+        if clearance.taxi_route:
+            parts.append("via " + " ".join(clearance.taxi_route))
+        if _safe_rwy(clearance.hold_short):
+            parts.append(f"hold short {clearance.hold_short}")
+        return " ".join(parts)
+    if ctype == "pushback":
+        return "pushback approved"
+    if ctype == "takeoff":
+        return f"cleared for takeoff {rwy}".strip()
+    if ctype == "approach":
+        return f"expect approach runway {rwy}".strip()
+    if ctype == "ils":
+        return f"cleared ils runway {rwy} approach".strip()
+
+    # Generic fallback for any other clearance type: the action plus the runway.
+    generic = ctype.replace("_", " ")
+    if rwy:
+        generic += f" runway {rwy}"
+    return generic
+
+
 # Per-type ICAO-style guidance appended to the online prompt to steer phrasing.
 # Keep each value a single sentence and free of the literal phrase "aircraft
 # type" (the prompt's aircraft line is gated separately and unit-tested).

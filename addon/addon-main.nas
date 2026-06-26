@@ -12,6 +12,12 @@
 #   /ai-atc/request/trigger   (bool)   set to 1 to fire the request; sidecar resets to 0
 #   /ai-atc/response/text     (string) latest ATC clearance text written by the sidecar
 #   /ai-atc/response/ready    (bool)   set to 1 by the sidecar when a response is available
+#   /ai-atc/readback/heard    (string) pilot's readback text (Phase 5 push-to-talk).
+#                               Live-bound to the dialog's Readback input; also set
+#                               by aiatc.ptt() (Ctrl+R) and graded on a "readback"
+#                               request.
+#   /ai-atc/readback/result   (string) human-readable readback grade written by the
+#                               sidecar, e.g. "OK (1.00)" / "Missing: 28R". Shown live.
 #   /ai-atc/status            (string) "idle" | "processing" | "error"
 #   /ai-atc/log               (string) accumulating transcript shown in the dialog
 #   /ai-atc/sidecar/heartbeat (int)    incremented every ~5 s by the sidecar
@@ -45,6 +51,10 @@ var _set_defaults = func {
     setprop(ROOT ~ "/request/trigger", 0);
     setprop(ROOT ~ "/response/text", "");
     setprop(ROOT ~ "/response/ready", 0);
+    # Phase 5 push-to-talk readback mailbox. Seeded blank so the dialog's live
+    # Readback input/result bindings render before the sidecar grades anything.
+    setprop(ROOT ~ "/readback/heard", "");
+    setprop(ROOT ~ "/readback/result", "");
     setprop(ROOT ~ "/status", "idle");
     setprop(ROOT ~ "/log", "");
     setprop(ROOT ~ "/sidecar/heartbeat", -1);
@@ -135,6 +145,16 @@ var request = func(req_type) {
     setprop(ROOT ~ "/request/trigger", 1);
     append_log("[you] request " ~ req_type ~ " (" ~ callsign ~ ")");
     _start_watchdog();
+};
+
+# Push-to-talk: submit the pilot's readback for grading. The dialog's Readback
+# <input> writes /ai-atc/readback/heard live, so ptt() simply fires a "readback"
+# request; the sidecar grades the heard text against the most recent clearance
+# and writes /ai-atc/readback/result. Exposed on globals.aiatc so the Ctrl+R
+# keybinding (which runs in the global scope) can submit a readback without the
+# dialog open. Minimal and best-effort: an empty heard field still fires.
+var ptt = func {
+    request("readback");
 };
 
 # Mode A: set runway[idx]/active to "1" (active) or "0" (inactive). Exposed on
@@ -309,7 +329,7 @@ var main = func(addon) {
     # Expose request() in the global namespace so dialog <command>nasal</command>
     # bindings (which run in the global scope, not the add-on scope) can reach it
     # via the short name  aiatc.request("pushback")  etc.
-    globals.aiatc = { request: request, set_runway_active: set_runway_active, set_mode: set_mode };
+    globals.aiatc = { request: request, ptt: ptt, set_runway_active: set_runway_active, set_mode: set_mode };
 
     # Surface each new clearance in the transcript as the sidecar writes it.
     append(_listeners, setlistener(ROOT ~ "/response/text", func(n) {

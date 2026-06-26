@@ -38,6 +38,13 @@ class Settings:
     # ATC clearances grounded in real groundnet XML names only.  Enable only once
     # Gemini is wired to an authoritative source (e.g. FAA NASR, Jeppesen charts).
     ai_taxiway_labels: bool = False  # set AI_TAXIWAY_LABELS=1 to enable (unsafe)
+    # --- Phase 5: voice realism (all capability-detected, safe defaults) ---
+    tts_engine: str = "say"  # TTS_ENGINE: "say" | "piper"
+    piper_bin: str = "piper"  # PIPER_BIN: piper executable name/path
+    piper_voice: str = ""  # PIPER_VOICE: piper voice model path (empty = default)
+    stt_engine: str = "none"  # STT_ENGINE: "none" | "whisper"
+    whisper_bin: str = "whisper"  # WHISPER_BIN: whisper executable name/path
+    radio_static: bool = False  # set RADIO_STATIC=1 to enable the static hook
 
 
 def load(env_path: str | None = None) -> Settings:
@@ -109,6 +116,14 @@ def load(env_path: str | None = None) -> Settings:
     # --- ai_taxiway_labels ---
     ai_taxiway_labels = os.environ.get("AI_TAXIWAY_LABELS", "0").strip() in ("1", "true", "yes")
 
+    # --- Phase 5: voice realism ---
+    tts_engine = os.environ.get("TTS_ENGINE", "say").strip() or "say"
+    piper_bin = os.environ.get("PIPER_BIN", "piper").strip() or "piper"
+    piper_voice = os.environ.get("PIPER_VOICE", "").strip()
+    stt_engine = os.environ.get("STT_ENGINE", "none").strip() or "none"
+    whisper_bin = os.environ.get("WHISPER_BIN", "whisper").strip() or "whisper"
+    radio_static = os.environ.get("RADIO_STATIC", "0").strip() in ("1", "true", "yes")
+
     return Settings(
         gemini_api_key=gemini_api_key,
         fg_telnet_host=fg_telnet_host,
@@ -121,4 +136,10 @@ def load(env_path: str | None = None) -> Settings:
         metar_enabled=metar_enabled,
         session_log_path=session_log_path,
         ai_taxiway_labels=ai_taxiway_labels,
+        tts_engine=tts_engine,
+        piper_bin=piper_bin,
+        piper_voice=piper_voice,
+        stt_engine=stt_engine,
+        whisper_bin=whisper_bin,
+        radio_static=radio_static,
     )

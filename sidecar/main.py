@@ -40,7 +40,8 @@ from sidecar.gemini_client import GeminiClient
 from sidecar.phraseology import Clearance
 from sidecar.runway_selection import build_taxi_clearance
 from sidecar.session_log import SessionMemory
-from sidecar.tts import TTS
+from sidecar.stt import grade_readback
+from sidecar.tts import TTS, make_tts_backend
 
 _log = logging.getLogger(__name__)
 
@@ -52,6 +53,10 @@ REQ_TRIGGER = "/ai-atc/request/trigger"
 RESP_TEXT = "/ai-atc/response/text"
 RESP_READY = "/ai-atc/response/ready"
 STATUS = "/ai-atc/status"
+
+# --- Phase 5: pilot readback grading (Nasal publishes heard text; sidecar grades) ---
+READBACK_HEARD = "/ai-atc/readback/heard"
+READBACK_RESULT = "/ai-atc/readback/result"
 AIRPORT_ID = "/sim/presets/airport-id"
 POS_LAT = "/position/latitude-deg"
 POS_LON = "/position/longitude-deg"
@@ -91,6 +96,27 @@ TRAFFIC_SUMMARY = "/ai-atc/traffic/summary"
 
 def _is_true(value: str) -> bool:
     return str(value).strip().lower() in ("1", "true", "yes")
+
+
+# Map a clearance to the controller position whose voice should speak it.  Used
+# only to colour the TTS voice; never affects RESP_TEXT/RESP_READY.
+_GROUND_TYPES = frozenset({"pushback", "taxi"})
+_TOWER_TYPES = frozenset({"takeoff"})
+_APPROACH_TYPES = frozenset({"approach", "ils", "airfield_in_sight"})
+
+
+def role_for_clearance(clearance: "Clearance | None") -> str:
+    """Return the ATC role ({ground,tower,approach}) for a clearance's voice.
+
+    Ground works pushback/taxi; arrivals (approach/ils/visual) get the approach
+    voice; everything else (takeoff, emergencies, relief, None) speaks as tower.
+    """
+    ctype = ((getattr(clearance, "clearance_type", "") or "")).lower()
+    if ctype in _GROUND_TYPES:
+        return "ground"
+    if ctype in _APPROACH_TYPES:
+        return "approach"
+    return "tower"
 
 
 def _to_float(value: str, default: float = 0.0) -> float:
@@ -368,6 +394,8 @@ class Sidecar:
         self.tts = tts
         self._groundnet_loader = groundnet_loader
         self._running = False
+        # Phase 5: the most recently issued clearance, for readback grading.
+        self._last_clearance: Clearance | None = None
         # Phase 4: a stable controller identity + bounded session memory.
         self.persona = personality.generate_persona(_DEFAULT_PERSONA_SEED)
         self.memory = SessionMemory()
@@ -577,6 +605,63 @@ class Sidecar:
         )
 
     # ------------------------------------------------------------------
+    # Phase 5: pilot readback grading
+    # ------------------------------------------------------------------
+
+    def _handle_readback(self) -> None:
+        """Grade the heard readback against the most recent clearance.
+
+        Best-effort throughout: any failure still writes a usable RESP_TEXT and
+        sets RESP_READY so the UI never hangs.  Writes a human-readable verdict
+        to READBACK_RESULT and voices an approval or a correction.
+        """
+        self.bridge.set(STATUS, "processing")
+        try:
+            heard = _clean_fg_str(self.bridge.get(READBACK_HEARD) or "")
+        except Exception:
+            heard = ""
+
+        clearance = self._last_clearance
+        result_text = ""
+        resp_text = ""
+        try:
+            if clearance is None:
+                result_text = "No active clearance to read back."
+                resp_text = "Say again, no clearance is active."
+            else:
+                expected = phraseology.expected_readback(clearance)
+                graded = grade_readback(expected, heard)
+                callsign = clearance.callsign or "Aircraft"
+                if graded.ok:
+                    result_text = f"Readback correct (score {graded.score:.2f})."
+                    resp_text = f"{callsign}, readback correct."
+                else:
+                    missing = ", ".join(graded.missing) or "(none)"
+                    result_text = (
+                        f"Readback incomplete (score {graded.score:.2f}); "
+                        f"missing: {missing}."
+                    )
+                    resp_text = f"{callsign}, negative. I say again, {expected}."
+        except Exception:
+            _log.warning("readback grading failed", exc_info=True)
+            result_text = result_text or "Readback could not be processed."
+            resp_text = resp_text or "Standby."
+
+        try:
+            self.bridge.set(READBACK_RESULT, result_text)
+        except Exception:
+            _log.debug("could not publish readback result", exc_info=True)
+        try:
+            self.tts.speak(resp_text, role=role_for_clearance(clearance))
+        except Exception:
+            _log.debug("readback speak failed", exc_info=True)
+
+        self.bridge.set(RESP_TEXT, resp_text)
+        self.bridge.set(RESP_READY, 1)
+        self.bridge.set(STATUS, "idle")
+        self.bridge.set(REQ_TRIGGER, 0)
+
+    # ------------------------------------------------------------------
     # One request
     # ------------------------------------------------------------------
 
@@ -589,8 +674,13 @@ class Sidecar:
             self.bridge.set(REQ_TRIGGER, 0)
             return
 
+        if req_type == "readback":
+            self._handle_readback()
+            return
+
         self.bridge.set(STATUS, "processing")
         aircraft_type = ""
+        clearance: Clearance | None = None
         try:
             icao = (self.bridge.get(AIRPORT_ID) or "").strip()
             lat = _to_float(self.bridge.get(POS_LAT))
@@ -624,6 +714,8 @@ class Sidecar:
                 clearance = self._build_clearance(req_type, callsign, picture)
                 self._apply_mode_nuance(clearance, mode)
                 aircraft_type = clearance.aircraft_type
+                # Remember the issued clearance so a later readback can be graded.
+                self._last_clearance = clearance
                 text = phraseology.phrase_online(
                     clearance,
                     self.client,
@@ -672,7 +764,8 @@ class Sidecar:
             picture=picture,
             response_text=text,
         )
-        self.tts.speak(text)
+        # Voice the reply with the controller position's voice (best-effort).
+        self.tts.speak(text, role=role_for_clearance(clearance))
         self.bridge.set(RESP_TEXT, text)
         self.bridge.set(RESP_READY, 1)
         self.bridge.set(STATUS, "idle")
@@ -734,7 +827,10 @@ def build_sidecar(settings: Settings) -> Sidecar:
     bridge = FGTelnetBridge(settings.fg_telnet_host, settings.fg_telnet_port)
     client = GeminiClient(settings)
     cache = PictureCache(settings.cache_db_path)
-    tts = TTS(voice=settings.tts_voice)
+    # Phase 5: pick the TTS backend from settings (piper when available, else
+    # macOS ``say``).  The injectable backend test seam is unaffected — tests
+    # construct TTS with their own recording backend and never call build_sidecar.
+    tts = TTS(voice=settings.tts_voice, backend=make_tts_backend(settings))
     return Sidecar(settings, bridge, client, cache, tts)
 
 
