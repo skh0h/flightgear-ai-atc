@@ -15,6 +15,7 @@ from pydantic import BaseModel
 
 from sidecar.gemini_client import GeminiClient, OfflineError
 from sidecar.personality import ControllerPersona
+from sidecar.procedures import build_craft_clearance
 
 
 @dataclass
@@ -35,6 +36,17 @@ class Clearance:
     remarks: str = ""
     aircraft_type: str = ""  # optional; empty string = not available
     divert_target: str = ""  # optional; "ICAO Name" for a diversion clearance
+    # Phase 7: optional IFR CRAFT fields (Cleared-limit/Route/Altitude/Squawk).
+    # All defaulted so existing constructors/tests are unaffected; ``frequency``
+    # doubles as the CRAFT departure frequency for an ``ifr_clearance``.
+    route: str = ""  # filed route (CRAFT "R")
+    destination: str = ""  # cleared limit / destination (CRAFT "C")
+    altitude: str = ""  # initial/assigned altitude (CRAFT "A")
+    squawk: str = ""  # assigned transponder code (CRAFT "T")
+    # Phase 7: holding / flow-control fields.
+    hold_fix: str = ""  # holding fix ident
+    hold_direction: str = ""  # holding direction (e.g. "north")
+    efc: str = ""  # expect-further-clearance time / EDCT wheels-up window
 
 
 class PhraseResult(BaseModel):
@@ -144,6 +156,61 @@ def phrase_offline(clearance: Clearance) -> str:
             f"{callsign}, runway {runway} at the intersection, "
             f"cleared for takeoff."
         )
+    elif ctype == "ifr_clearance":
+        # Full CRAFT read-out when any CRAFT field is supplied; otherwise a
+        # sensible generic IFR clearance.  Returns early so the shared
+        # frequency tail does not double-append the departure frequency (which
+        # the CRAFT phrase already carries as ``departure``).
+        has_craft = any(
+            (clearance.route, clearance.destination, clearance.altitude, clearance.squawk)
+        )
+        if has_craft:
+            craft = build_craft_clearance(
+                callsign,
+                destination=clearance.destination or "your destination",
+                route=clearance.route or "the filed route",
+                altitude=clearance.altitude or "the filed altitude",
+                departure_freq=clearance.frequency or "departure",
+                squawk=clearance.squawk or "as assigned",
+            )
+            sentence = craft.as_phrase(callsign)
+        else:
+            sentence = (
+                f"{callsign}, cleared to destination as filed, "
+                f"standby for full route clearance."
+            )
+        if clearance.remarks:
+            sentence += f" {clearance.remarks}"
+        return sentence
+    elif ctype == "holding":
+        fix = clearance.hold_fix or _safe_rwy(clearance.hold_short) or "the fix"
+        if clearance.hold_direction:
+            sentence = f"{callsign}, hold {clearance.hold_direction} of {fix} as published"
+        else:
+            sentence = f"{callsign}, hold at {fix} as published"
+        if clearance.efc:
+            sentence += f", expect further clearance at {clearance.efc}"
+        sentence += "."
+    elif ctype == "arrival_clearance":
+        runway = _safe_rwy(clearance.active_runway) or "the active runway"
+        sentence = f"{callsign}, expect vectors for the approach runway {runway}"
+        if clearance.altitude:
+            sentence += f", descend and maintain {clearance.altitude}"
+        sentence += "."
+    elif ctype == "expect_approach":
+        runway = _safe_rwy(clearance.active_runway) or "the active runway"
+        sentence = f"{callsign}, expect the ILS approach runway {runway}."
+    elif ctype == "flow_control":
+        if clearance.efc:
+            sentence = (
+                f"{callsign}, flow control in effect, "
+                f"expect departure clearance time {clearance.efc}."
+            )
+        else:
+            sentence = (
+                f"{callsign}, ground stop in effect, "
+                f"expect a wheels-up time shortly."
+            )
     else:  # taxi (default)
         parts = [f"{callsign}, taxi"]
         if _safe_rwy(clearance.active_runway):
@@ -225,6 +292,11 @@ _TYPE_GUIDANCE = {
     "relief_handoff": "For a position relief, briefly introduce the relieving controller and summarise recent activity for continuity.",
     "lahso": "For land-and-hold-short operations, clear the aircraft to land and instruct it to hold short of the intersecting runway.",
     "intersection_departure": "For an intersection departure, state the departure runway and the intersection and issue the takeoff clearance.",
+    "ifr_clearance": "For an IFR clearance, read the full CRAFT clearance in order: cleared limit, route, altitude, departure frequency, and transponder squawk code.",
+    "holding": "For a holding clearance, name the holding fix and the direction to hold, state that it is as published, and give the expect-further-clearance time.",
+    "arrival_clearance": "For an arrival clearance, give the approach to expect and the descent or crossing restriction.",
+    "expect_approach": "For an expect-approach advisory, tell the pilot which approach and runway to expect.",
+    "flow_control": "For flow control, advise the ground stop or EDCT wheels-up window as a traffic-management initiative.",
 }
 
 

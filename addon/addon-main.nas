@@ -3,14 +3,27 @@
 # /ai-atc/ property mailbox:
 #   /ai-atc/request/type      (string) request token, e.g.:
 #                               departure: "pushback" | "taxi" | "takeoff" |
-#                                          "intersection_departure" | "cancel"
+#                                          "intersection_departure" | "ifr_clearance" |
+#                                          "cancel"
 #                               arrival:   "approach" | "ils" | "airfield_in_sight" |
-#                                          "lahso" | "radio_check"
+#                                          "lahso" | "radio_check" | "arrival_clearance" |
+#                                          "holding" | "expect_approach"
+#                               flow:      "flow_control"
 #                               emergency: "mayday" | "pan_pan" | "gear_emergency" |
 #                                          "min_fuel" | "diversion" | "go_around" |
 #                                          "squawk_7500" | "squawk_7600" | "squawk_7700"
 #   /ai-atc/request/callsign  (string) aircraft callsign, e.g. "N12345"
 #   /ai-atc/request/runway    (string) requested/active runway, e.g. "28R"
+#   /ai-atc/request/destination (string) IFR destination ICAO, best-effort from the
+#                               route-manager; published by publish_flightplan()
+#   /ai-atc/request/route     (string) IFR route string (or "DCT" fallback), published
+#                               by publish_flightplan() for the ifr_clearance request
+#   /ai-atc/request/altitude  (string) requested/cruise altitude in ft, best-effort from
+#                               the route-manager; published by publish_flightplan()
+#   /ai-atc/request/squawk    (string) assigned transponder code; written by the sidecar
+#                               on an ifr_clearance, seeded blank by the add-on
+#   /ai-atc/flight-phase      (string) current flight phase published by the sidecar
+#                               (e.g. "preflight"); shown live in the dialog ("Phase: %s")
 #   /ai-atc/request/trigger   (bool)   set to 1 to fire the request; sidecar resets to 0
 #   /ai-atc/response/text     (string) latest ATC clearance text written by the sidecar
 #   /ai-atc/response/ready    (bool)   set to 1 by the sidecar when a response is available
@@ -53,6 +66,17 @@ var _set_defaults = func {
     setprop(ROOT ~ "/request/callsign", "");
     setprop(ROOT ~ "/request/runway", "");
     setprop(ROOT ~ "/request/trigger", 0);
+    # Phase 7 IFR clearance inputs. Seeded blank; publish_flightplan() refreshes
+    # destination/route/altitude best-effort from the route-manager, and the
+    # sidecar may write /request/squawk back on an ifr_clearance.
+    setprop(ROOT ~ "/request/destination", "");
+    setprop(ROOT ~ "/request/route", "");
+    setprop(ROOT ~ "/request/altitude", "");
+    setprop(ROOT ~ "/request/squawk", "");
+    # Current flight phase published by the sidecar to /ai-atc/flight-phase;
+    # seeded "preflight" so the dialog's live "Phase: %s" binding renders before
+    # the sidecar publishes the first phase.
+    setprop(ROOT ~ "/flight-phase", "preflight");
     setprop(ROOT ~ "/response/text", "");
     setprop(ROOT ~ "/response/ready", 0);
     # Phase 5 push-to-talk readback mailbox. Seeded blank so the dialog's live
@@ -281,6 +305,41 @@ var publish_nearest_airport = func {
     # _err intentionally ignored — nearest-airport data is optional.
 };
 
+# Best-effort: publish the active flightplan from FlightGear's route-manager into
+# the /ai-atc/request/{destination,route,altitude} mailbox so the sidecar can
+# phrase an 'ifr_clearance' (e.g. "cleared to KLAX via DCT, climb and maintain
+# 8000"). Every read is wrapped in a call() guard: if the route-manager is empty
+# or an API is unavailable this simply leaves the seeded "" defaults in place and
+# never throws. The route-manager's departure runway also seeds /request/runway,
+# but only when the pilot hasn't already typed one into the dialog.
+var publish_flightplan = func {
+    var _err = [];
+    call(func {
+        var dest = getprop("/autopilot/route-manager/destination/airport");
+        if (dest != nil and dest != "")
+            setprop(ROOT ~ "/request/destination", dest);
+
+        var alt = getprop("/autopilot/route-manager/cruise/altitude-ft");
+        if (alt != nil and alt != "" and alt != 0)
+            setprop(ROOT ~ "/request/altitude", sprintf("%d", int(alt)));
+
+        # Seed the requested runway from the route-manager's departure runway,
+        # but only if the pilot hasn't already typed one into the dialog.
+        var dep_rwy = getprop("/autopilot/route-manager/departure/runway");
+        var cur_rwy = getprop(ROOT ~ "/request/runway");
+        if (dep_rwy != nil and dep_rwy != "" and (cur_rwy == nil or cur_rwy == ""))
+            setprop(ROOT ~ "/request/runway", dep_rwy);
+
+        # Route string: prefer the route-manager's published route text when
+        # present, else fall back to "DCT" (direct) so the sidecar always sees a
+        # well-formed route for the IFR clearance.
+        var route = getprop("/autopilot/route-manager/route");
+        if (route == nil or route == "") route = "DCT";
+        setprop(ROOT ~ "/request/route", route);
+    }, nil, _err);
+    # _err intentionally ignored — flightplan data is best-effort/optional.
+};
+
 # Best-effort: publish the sim's current local hour (0-23) to /ai-atc/local-hour
 # so the sidecar can detect "quiet night" hours for the reflective-mood easter
 # egg. Prefers /sim/time/local-day-seconds (sim local time at the aircraft),
@@ -368,6 +427,7 @@ var main = func(addon) {
         if (icao != nil and icao != "") {
             publish_airport_data(icao);
             publish_nearest_airport();   # best-effort; never throws
+            publish_flightplan();        # best-effort IFR flightplan; never throws
         }
     }, 0, 0));
 
@@ -385,6 +445,7 @@ var main = func(addon) {
     var icao = getprop("/sim/presets/airport-id");
     publish_airport_data(icao);
     publish_nearest_airport();   # best-effort nearest-airport for diversions
+    publish_flightplan();        # best-effort IFR flightplan for ifr_clearance
 
     # Initial backend status check.
     _update_backend_status();

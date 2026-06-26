@@ -1169,3 +1169,145 @@ def test_handle_trigger_readback_without_prior_clearance(tmp_path: Path) -> None
     assert bridge.props[STATUS] == "idle"
     assert bridge.props[REQ_TRIGGER] == 0
     assert bridge.props.get(RESP_TEXT, "")
+
+
+# ---------------------------------------------------------------------------
+# Phase 7: flight-phase state machine + IFR CRAFT clearance wiring
+# ---------------------------------------------------------------------------
+
+
+def test_handle_trigger_publishes_flight_phase_and_advances(tmp_path: Path) -> None:
+    """handle_trigger publishes FLIGHT_PHASE and advances the fsm forward across
+    a pushback -> taxi -> takeoff sequence."""
+    from sidecar import state
+    from sidecar.main import FLIGHT_PHASE
+
+    pic = _synthetic_picture()
+    props = {
+        AIRPORT_ID: pic.icao,
+        REQ_TYPE: "pushback",
+        REQ_CALLSIGN: "UAL9",
+        REQ_RUNWAY: "",
+        POS_LAT: "37.620",
+        POS_LON: "-122.380",
+        REQ_TRIGGER: "1",
+    }
+    sidecar, bridge, _ = _make_with_picture(tmp_path, props, pic)
+
+    sidecar.handle_trigger()
+    assert bridge.props[FLIGHT_PHASE] == state.PUSHBACK
+    assert sidecar.fsm.phase == state.PUSHBACK
+
+    bridge.props[REQ_TYPE] = "taxi"
+    bridge.props[REQ_TRIGGER] = "1"
+    sidecar.handle_trigger()
+    assert bridge.props[FLIGHT_PHASE] == state.TAXI_OUT
+    assert sidecar.fsm.phase == state.TAXI_OUT
+
+    bridge.props[REQ_TYPE] = "takeoff"
+    bridge.props[REQ_RUNWAY] = "28L"
+    bridge.props[REQ_TRIGGER] = "1"
+    sidecar.handle_trigger()
+    assert bridge.props[FLIGHT_PHASE] == state.TAKEOFF
+    assert sidecar.fsm.phase == state.TAKEOFF
+
+
+def test_handle_trigger_ifr_clearance_builds_craft_clearance(tmp_path: Path) -> None:
+    """An ifr_clearance request with route/destination/altitude/squawk props
+    produces a full CRAFT clearance in RESP_TEXT."""
+    from sidecar.main import (
+        AP_FREQ_DEPARTURE,
+        REQ_ALTITUDE,
+        REQ_DESTINATION,
+        REQ_ROUTE,
+        REQ_SQUAWK,
+    )
+
+    pic = _synthetic_picture()
+    props = {
+        AIRPORT_ID: pic.icao,
+        REQ_TYPE: "ifr_clearance",
+        REQ_CALLSIGN: "UAL123",
+        REQ_RUNWAY: "",
+        POS_LAT: "37.620",
+        POS_LON: "-122.380",
+        REQ_TRIGGER: "1",
+        REQ_ROUTE: "SID then as filed",
+        REQ_DESTINATION: "KLAX",
+        REQ_ALTITUDE: "FL350",
+        REQ_SQUAWK: "4271",
+        AP_FREQ_DEPARTURE: "120.5",
+    }
+    sidecar, bridge, backend = _make_with_picture(tmp_path, props, pic)
+    sidecar.handle_trigger()
+
+    assert bridge.props[RESP_TEXT] == (
+        "UAL123, cleared to KLAX via SID then as filed, "
+        "climb maintain FL350, departure 120.5, squawk 4271."
+    )
+    assert bridge.props[RESP_READY] == 1
+    assert bridge.props[STATUS] == "idle"
+    assert bridge.props[REQ_TRIGGER] == 0
+    assert backend.said
+
+
+def test_build_clearance_ifr_populates_craft_fields(tmp_path: Path) -> None:
+    """_build_clearance copies the IFR request fields onto the Clearance."""
+    from sidecar.main import (
+        AP_FREQ_DEPARTURE,
+        REQ_ALTITUDE,
+        REQ_DESTINATION,
+        REQ_ROUTE,
+        REQ_SQUAWK,
+    )
+
+    pic = _synthetic_picture()
+    props = {
+        AIRPORT_ID: pic.icao,
+        REQ_TYPE: "ifr_clearance",
+        REQ_CALLSIGN: "UAL123",
+        REQ_RUNWAY: "",
+        POS_LAT: "37.620",
+        POS_LON: "-122.380",
+        REQ_ROUTE: "DCT",
+        REQ_DESTINATION: "KLAX",
+        REQ_ALTITUDE: "6000",
+        REQ_SQUAWK: "4271",
+        AP_FREQ_DEPARTURE: "120.5",
+    }
+    sidecar, _, _ = _make_with_picture(tmp_path, props, pic)
+    clearance = sidecar._build_clearance("ifr_clearance", "UAL123", pic)
+    assert clearance.destination == "KLAX"
+    assert clearance.route == "DCT"
+    assert clearance.altitude == "6000"
+    assert clearance.squawk == "4271"
+    assert clearance.frequency == "120.5"
+
+
+def test_handle_trigger_fsm_failure_still_writes_response(
+    tmp_path: Path, monkeypatch: Any
+) -> None:
+    """If the flight-phase machine raises, handle_trigger still writes
+    RESP_TEXT/RESP_READY and resets the mailbox (the fsm call is guarded)."""
+    pic = _synthetic_picture()
+    props = {
+        AIRPORT_ID: pic.icao,
+        REQ_TYPE: "taxi",
+        REQ_CALLSIGN: "UAL9",
+        REQ_RUNWAY: "28L",
+        POS_LAT: "37.620",
+        POS_LON: "-122.380",
+        REQ_TRIGGER: "1",
+    }
+    sidecar, bridge, backend = _make_with_picture(tmp_path, props, pic)
+
+    def _boom(*_a: Any, **_k: Any) -> Any:
+        raise RuntimeError("fsm blew up")
+
+    monkeypatch.setattr(sidecar.fsm, "on_request", _boom)
+    sidecar.handle_trigger()
+
+    assert bridge.props[RESP_TEXT].startswith("UAL9")
+    assert bridge.props[RESP_READY] == 1
+    assert bridge.props[STATUS] == "idle"
+    assert bridge.props[REQ_TRIGGER] == 0
