@@ -135,6 +135,14 @@ KNEEBOARD = "/ai-atc/kneeboard"
 # in RESP_TEXT is always published regardless of issues.
 GUARDRAIL = "/ai-atc/guardrail"
 
+# --- Phase 10: runtime language / region mailbox (§5.9) ---------------------
+# Nasal writes the pilot-selected language/region codes here (via the Language
+# and Region panel buttons); the sidecar reads them each request and overrides
+# the env/config default for that request only.  Absent or empty → legacy
+# env/config default (backward-compatible).
+LANGUAGE_PATH = "/ai-atc/language"
+REGION_PATH = "/ai-atc/region"
+
 
 def _is_true(value: str) -> bool:
     return str(value).strip().lower() in ("1", "true", "yes")
@@ -888,6 +896,22 @@ class Sidecar:
         req_type = (self.bridge.get(REQ_TYPE) or "taxi").strip()
         callsign = _clean_fg_str(self.bridge.get(REQ_CALLSIGN)) or "Aircraft"
 
+        # §5.9: read language/region from the runtime mailbox set by the panel.
+        # Override env/config default when the value is non-empty; fall back to
+        # self.settings otherwise.  Exception-guarded: a bridge failure here must
+        # never break RESP_TEXT/RESP_READY.
+        effective_language = self.settings.language
+        effective_region = self.settings.region
+        try:
+            _mb_lang = _clean_fg_str(self.bridge.get(LANGUAGE_PATH) or "")
+            if _mb_lang:
+                effective_language = _mb_lang.strip().lower() or effective_language
+            _mb_region = _clean_fg_str(self.bridge.get(REGION_PATH) or "")
+            if _mb_region:
+                effective_region = _mb_region.strip().lower() or effective_region
+        except Exception:
+            _log.debug("language/region mailbox read failed", exc_info=True)
+
         # Phase 7: fold the request into the advisory flight-phase machine and
         # publish the current phase.  Advisory only: on_request never raises and
         # the publish is best-effort, so this never breaks RESP_TEXT/RESP_READY.
@@ -912,8 +936,8 @@ class Sidecar:
                 airspace_class=_clean_fg_str(self.bridge.get(AIRSPACE_CLASS) or "") or "G",
                 mode=(self.bridge.get(MODE) or "normal").strip().lower() or "normal",
                 controller=self.persona.name,
-                language=self.settings.language,
-                region=self.settings.region,
+                language=effective_language,
+                region=effective_region,
             )
         except Exception:
             _log.debug("blackboard update failed", exc_info=True)
@@ -1009,7 +1033,7 @@ class Sidecar:
                     context=context,
                     persona=self.persona,
                     mood=mood,
-                    language=self.settings.language,
+                    language=effective_language,
                 )
                 # Mode B: best-effort live traffic sequencing for taxi requests.
                 # Wrapped so any traffic failure NEVER breaks the clearance reply.
@@ -1045,7 +1069,7 @@ class Sidecar:
         # default "us" pack (and any unknown region) is a no-op.  Applied to the
         # final rendered text so the offline templates stay region-neutral.
         try:
-            text = i18n.apply_region(text, self.settings.region)
+            text = i18n.apply_region(text, effective_region)
         except Exception:
             _log.debug("region substitution failed", exc_info=True)
 

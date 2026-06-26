@@ -15,10 +15,12 @@ from sidecar.main import (
     AIRPORT_ID,
     CONTROLLER_NAME,
     HEARTBEAT,
+    LANGUAGE_PATH,
     LOCAL_HOUR,
     MODE,
     POS_LAT,
     POS_LON,
+    REGION_PATH,
     REQ_CALLSIGN,
     REQ_RUNWAY,
     REQ_TRIGGER,
@@ -1718,3 +1720,121 @@ def test_handle_trigger_updates_blackboard_snapshot(tmp_path: Path) -> None:
     assert snap["controller"] == sidecar.persona.name
     assert snap["language"] == "en"
     assert snap["region"] == "us"
+
+
+# ---------------------------------------------------------------------------
+# §5.9: runtime language / region mailbox — FIX 1 tests
+# ---------------------------------------------------------------------------
+
+
+def _base_taxi_props() -> dict[str, Any]:
+    """Minimal props for a taxi clearance (no airport picture needed)."""
+    return {
+        AIRPORT_ID: "KSFO",
+        REQ_TYPE: "taxi",
+        REQ_CALLSIGN: "UAL99",
+        REQ_RUNWAY: "",
+        POS_LAT: "37.62",
+        POS_LON: "-122.38",
+        REQ_TRIGGER: "1",
+    }
+
+
+def test_language_mailbox_overrides_env_default(tmp_path: Path) -> None:
+    """Setting /ai-atc/language to a non-default value ('fr') in the bridge
+    causes handle_trigger to pass that language to phraseology (blackboard
+    snapshot reflects 'fr', not the Settings default 'en')."""
+    props = {**_base_taxi_props(), LANGUAGE_PATH: "fr"}
+    sidecar, bridge, _ = _make(tmp_path, props)
+    sidecar.handle_trigger()
+
+    # Response contract must hold.
+    assert bridge.props[RESP_TEXT] != ""
+    assert bridge.props[RESP_READY] == 1
+    assert bridge.props[STATUS] == "idle"
+    # Blackboard was updated with the mailbox language.
+    snap = sidecar.blackboard.snapshot()
+    assert snap["language"] == "fr", (
+        f"Expected 'fr' from mailbox, got {snap['language']!r}"
+    )
+
+
+def test_region_mailbox_overrides_env_default(tmp_path: Path) -> None:
+    """Setting /ai-atc/region to 'uk' in the bridge causes handle_trigger to
+    apply UK regional substitutions (blackboard reflects 'uk')."""
+    props = {**_base_taxi_props(), REGION_PATH: "uk"}
+    sidecar, bridge, _ = _make(tmp_path, props)
+    sidecar.handle_trigger()
+
+    assert bridge.props[RESP_TEXT] != ""
+    assert bridge.props[RESP_READY] == 1
+    assert bridge.props[STATUS] == "idle"
+    snap = sidecar.blackboard.snapshot()
+    assert snap["region"] == "uk", (
+        f"Expected 'uk' from mailbox, got {snap['region']!r}"
+    )
+
+
+def test_absent_language_mailbox_falls_back_to_settings(tmp_path: Path) -> None:
+    """When /ai-atc/language is absent the sidecar uses the Settings default
+    ('en'), preserving backward-compatible behaviour."""
+    props = _base_taxi_props()  # no LANGUAGE_PATH key
+    sidecar, bridge, _ = _make(tmp_path, props)
+    sidecar.handle_trigger()
+
+    assert bridge.props[RESP_READY] == 1
+    snap = sidecar.blackboard.snapshot()
+    assert snap["language"] == sidecar.settings.language
+
+
+def test_empty_language_mailbox_falls_back_to_settings(tmp_path: Path) -> None:
+    """An empty string in /ai-atc/language is treated the same as absent
+    (falls back to Settings.language rather than overriding with '')."""
+    props = {**_base_taxi_props(), LANGUAGE_PATH: ""}
+    sidecar, bridge, _ = _make(tmp_path, props)
+    sidecar.handle_trigger()
+
+    assert bridge.props[RESP_READY] == 1
+    snap = sidecar.blackboard.snapshot()
+    assert snap["language"] == sidecar.settings.language
+
+
+def test_absent_region_mailbox_falls_back_to_settings(tmp_path: Path) -> None:
+    """When /ai-atc/region is absent the sidecar uses Settings.region ('us')."""
+    props = _base_taxi_props()  # no REGION_PATH key
+    sidecar, bridge, _ = _make(tmp_path, props)
+    sidecar.handle_trigger()
+
+    assert bridge.props[RESP_READY] == 1
+    snap = sidecar.blackboard.snapshot()
+    assert snap["region"] == sidecar.settings.region
+
+
+def test_language_mailbox_read_failure_does_not_break_response(tmp_path: Path) -> None:
+    """If the bridge raises when reading /ai-atc/language the exception must be
+    swallowed and the response contract (RESP_TEXT non-empty, RESP_READY==1,
+    STATUS=='idle') must still be fulfilled."""
+    props = _base_taxi_props()
+    bridge = _FakeBridge(props)
+    cache = PictureCache(tmp_path / "cache.sqlite")
+    backend = _RecordingBackend()
+    tts = TTS(backend=backend)
+
+    original_get = bridge.get
+
+    def get_raising_on_language(path: str) -> str:
+        if path == LANGUAGE_PATH:
+            raise RuntimeError("simulated bridge read failure")
+        return original_get(path)
+
+    bridge.get = get_raising_on_language  # type: ignore[method-assign]
+
+    sidecar = Sidecar(
+        _settings(), bridge, _OfflineClient(), cache, tts,
+        groundnet_loader=lambda icao: None,
+    )
+    sidecar.handle_trigger()
+
+    assert bridge.props.get(RESP_TEXT, "") != ""
+    assert bridge.props[RESP_READY] == 1
+    assert bridge.props[STATUS] == "idle"
