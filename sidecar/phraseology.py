@@ -248,6 +248,16 @@ def phrase_offline(clearance: Clearance) -> str:
         )
         if clearance.airspace_warning:
             sentence += " " + clearance.airspace_warning
+    elif ctype in ("scenario", "kneeboard", "career"):
+        # Phase 9 announce types: the spoken body is supplied verbatim in
+        # ``remarks`` (a deterministic summary built by the sidecar).  Return
+        # early so the shared frequency/remarks tail is not double-appended.
+        body = clearance.remarks or {
+            "scenario": "training scenario ready.",
+            "kneeboard": "kneeboard updated and available.",
+            "career": "career stats updated.",
+        }[ctype]
+        return f"{callsign}, {body}"
     else:  # taxi (default)
         parts = [f"{callsign}, taxi"]
         if _safe_rwy(clearance.active_runway):
@@ -338,6 +348,9 @@ _TYPE_GUIDANCE = {
     "fss_briefing": "For a flight-service briefing, deliver a concise Flight Service summary of weather, NOTAMs, and TFRs on request.",
     "simbrief": "For an imported flight plan, confirm the destination, the filed route, and the planned cruise altitude back to the pilot.",
     "airspace_check": "For an airspace check, state the current airspace class letter and read back any associated warning or advisory.",
+    "scenario": "For a training scenario, briefly announce the generated scenario conditions (airport, weather, wind, traffic, and any failure) to the pilot.",
+    "kneeboard": "For a kneeboard update, tell the pilot their kneeboard with airport, wind, active runways, and frequencies is available.",
+    "career": "For a career update, state the pilot's current rank and points total.",
 }
 
 

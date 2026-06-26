@@ -33,6 +33,7 @@ def _clean_env(monkeypatch: pytest.MonkeyPatch) -> None:
         "STT_ENGINE",
         "WHISPER_BIN",
         "RADIO_STATIC",
+        "CAREER_PATH",
     ):
         monkeypatch.delenv(key, raising=False)
 
@@ -254,3 +255,23 @@ def test_radio_static_zero_keeps_false(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("RADIO_STATIC", "0")
     settings = load(env_path=None)
     assert settings.radio_static is False
+
+
+# ---------------------------------------------------------------------------
+# Phase 9: career persistence path
+# ---------------------------------------------------------------------------
+
+
+def test_career_path_defaults_empty(monkeypatch: pytest.MonkeyPatch) -> None:
+    """career_path defaults to "" (career persistence off)."""
+    _clean_env(monkeypatch)
+    settings = load(env_path=None)
+    assert settings.career_path == ""
+
+
+def test_career_path_from_env(monkeypatch: pytest.MonkeyPatch) -> None:
+    """CAREER_PATH populates career_path verbatim (trimmed)."""
+    _clean_env(monkeypatch)
+    monkeypatch.setenv("CAREER_PATH", "/tmp/career.json")
+    settings = load(env_path=None)
+    assert settings.career_path == "/tmp/career.json"

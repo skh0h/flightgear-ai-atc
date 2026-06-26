@@ -26,7 +26,18 @@ import sys
 import time
 from collections.abc import Callable
 
-from sidecar import metar, parser_ai, personality, phraseology, routing, traffic
+from sidecar import (
+    career,
+    coach,
+    kneeboard as kneeboard_mod,
+    metar,
+    parser_ai,
+    personality,
+    phraseology,
+    routing,
+    scenario as scenario_mod,
+    traffic,
+)
 from sidecar.airport_picture import (
     AirportPicture,
     Frequencies,
@@ -110,6 +121,10 @@ TRAFFIC_COUNT = "/ai-atc/traffic/count"
 TRAFFIC_SUMMARY = "/ai-atc/traffic/summary"
 # Phase 6: living-world ambient background chatter (sidecar writes one line).
 CHATTER = "/ai-atc/chatter"
+
+# --- Phase 9: gamification / training --------------------------------------
+# Sidecar writes the rendered kneeboard card here for the panel to display.
+KNEEBOARD = "/ai-atc/kneeboard"
 
 
 def _is_true(value: str) -> bool:
@@ -711,6 +726,15 @@ class Sidecar:
                         f"missing: {missing}."
                     )
                     resp_text = f"{callsign}, negative. I say again, {expected}."
+                # Phase 9: in student mode, append friendly coaching feedback.
+                try:
+                    mode = (self.bridge.get(MODE) or "normal").strip().lower()
+                    if mode == "student":
+                        resp_text = (
+                            f"{resp_text} {coach.coach_feedback(expected, heard)}"
+                        ).strip()
+                except Exception:
+                    _log.debug("coach feedback failed", exc_info=True)
         except Exception:
             _log.warning("readback grading failed", exc_info=True)
             result_text = result_text or "Readback could not be processed."
@@ -729,6 +753,121 @@ class Sidecar:
         self.bridge.set(RESP_READY, 1)
         self.bridge.set(STATUS, "idle")
         self.bridge.set(REQ_TRIGGER, 0)
+
+    # ------------------------------------------------------------------
+    # Phase 9: training / gamification announce handlers
+    # ------------------------------------------------------------------
+
+    def _finish_announce(self, text: str, role: str) -> None:
+        """Voice an announce reply and finalise the mailbox (best-effort)."""
+        try:
+            self.tts.speak(text, role=role)
+        except Exception:
+            _log.debug("announce speak failed", exc_info=True)
+        self.bridge.set(RESP_TEXT, text)
+        self.bridge.set(RESP_READY, 1)
+        self.bridge.set(STATUS, "idle")
+        self.bridge.set(REQ_TRIGGER, 0)
+
+    def _handle_scenario(self, callsign: str) -> None:
+        """Generate a deterministic training scenario and voice its summary."""
+        self.bridge.set(STATUS, "processing")
+        text = ""
+        try:
+            icao = (self.bridge.get(AIRPORT_ID) or "").strip()
+            seed = f"{callsign}-{self.memory.count}"
+            s = scenario_mod.generate_scenario(seed, airport=icao)
+            summary = scenario_mod.scenario_summary(s)
+            clearance = Clearance(
+                callsign=callsign, clearance_type="scenario", remarks=summary
+            )
+            text = phraseology.phrase_online(clearance, self.client, persona=self.persona)
+        except Exception:
+            _log.warning("scenario generation failed", exc_info=True)
+            text = text or "Stand by — unable to generate a training scenario."
+        self._finish_announce(text, "tower")
+
+    def _handle_kneeboard(self, callsign: str) -> None:
+        """Build a kneeboard from the current picture + METAR wind; publish + voice."""
+        self.bridge.set(STATUS, "processing")
+        text = ""
+        try:
+            icao = (self.bridge.get(AIRPORT_ID) or "").strip()
+            groundnet_xml = self._groundnet_loader(icao)
+            picture = (
+                self.get_airport_picture(icao, groundnet_xml)
+                if groundnet_xml
+                else None
+            )
+            if picture is not None:
+                picture = merge_airport_mailbox(picture, self.bridge)
+
+            wind = self._fetch_metar_wind(icao)
+            wind_dir = int(wind[0]) if wind is not None else None
+            wind_kt = int(wind[1]) if wind is not None else None
+
+            runways: list[str] = []
+            freqs: dict[str, str] = {}
+            if picture is not None:
+                active = [r.id for r in picture.runways if getattr(r, "active", False)]
+                runways = active or [r.id for r in picture.runways]
+                f = picture.frequencies
+                if f is not None:
+                    for label, value in (
+                        ("Ground", f.ground),
+                        ("Tower", f.tower),
+                        ("ATIS", f.atis),
+                        ("Approach", f.approach),
+                        ("Departure", f.departure),
+                    ):
+                        if value:
+                            freqs[label] = value
+
+            card = kneeboard_mod.build_kneeboard(
+                icao=icao,
+                wind_dir=wind_dir,
+                wind_kt=wind_kt,
+                runways=runways,
+                freqs=freqs,
+            )
+            try:
+                self.bridge.set(KNEEBOARD, card)
+            except Exception:
+                _log.debug("could not publish kneeboard", exc_info=True)
+
+            summary = (
+                f"kneeboard updated for {icao or 'the field'}, "
+                f"{len(runways)} active runway(s)."
+            )
+            clearance = Clearance(
+                callsign=callsign, clearance_type="kneeboard", remarks=summary
+            )
+            text = phraseology.phrase_online(clearance, self.client, persona=self.persona)
+        except Exception:
+            _log.warning("kneeboard build failed", exc_info=True)
+            text = text or "Stand by — unable to build the kneeboard."
+        self._finish_announce(text, "tower")
+
+    def _handle_career(self, callsign: str) -> None:
+        """Load career stats (if configured) and voice the current rank/points."""
+        self.bridge.set(STATUS, "processing")
+        text = ""
+        try:
+            path = getattr(self.settings, "career_path", "") or ""
+            stats = career.load_career(path) if path else career.CareerStats()
+            rank = career.career_rank(stats.points)
+            summary = (
+                f"career rank {rank}, {stats.points} points, "
+                f"{stats.landings} landings logged."
+            )
+            clearance = Clearance(
+                callsign=callsign, clearance_type="career", remarks=summary
+            )
+            text = phraseology.phrase_online(clearance, self.client, persona=self.persona)
+        except Exception:
+            _log.warning("career summary failed", exc_info=True)
+            text = text or "Stand by — career stats are unavailable."
+        self._finish_announce(text, "tower")
 
     # ------------------------------------------------------------------
     # One request
@@ -754,6 +893,19 @@ class Sidecar:
 
         if req_type == "readback":
             self._handle_readback()
+            return
+
+        # Phase 9: training / gamification announce types.  Each is a
+        # self-contained, best-effort handler that always writes RESP_TEXT/
+        # RESP_READY and resets the mailbox (never breaks the request loop).
+        if req_type == "scenario":
+            self._handle_scenario(callsign)
+            return
+        if req_type == "kneeboard":
+            self._handle_kneeboard(callsign)
+            return
+        if req_type == "career":
+            self._handle_career(callsign)
             return
 
         self.bridge.set(STATUS, "processing")

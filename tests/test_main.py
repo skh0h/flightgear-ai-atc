@@ -1445,3 +1445,136 @@ def test_handle_trigger_ctaf_self_announce_no_contact_tail(tmp_path: Path) -> No
     assert bridge.props[STATUS] == "idle"
     assert bridge.props[REQ_TRIGGER] == 0
     assert backend.said
+
+
+# ---------------------------------------------------------------------------
+# Phase 9: training / gamification (scenario / kneeboard / career / coaching)
+# ---------------------------------------------------------------------------
+
+
+def test_handle_trigger_kneeboard_publishes_card_and_writes_resp(tmp_path: Path) -> None:
+    """A kneeboard request publishes a non-empty /ai-atc/kneeboard and RESP_TEXT."""
+    import dataclasses
+
+    from sidecar.main import KNEEBOARD
+
+    pic = _synthetic_picture()
+    props = {
+        AIRPORT_ID: pic.icao,
+        REQ_TYPE: "kneeboard",
+        REQ_CALLSIGN: "N12",
+        REQ_TRIGGER: "1",
+    }
+    sidecar, bridge, backend = _make_with_picture(tmp_path, props, pic)
+    # Keep the test offline/deterministic: no live METAR fetch.
+    sidecar.settings = dataclasses.replace(sidecar.settings, metar_enabled=False)
+    sidecar.handle_trigger()
+
+    card = bridge.props.get(KNEEBOARD, "")
+    assert card, "kneeboard card should be published"
+    assert "KNEEBOARD" in card
+    assert pic.icao in card  # airport line carries the ICAO
+    assert "28L" in card  # the synthetic active runway
+    assert bridge.props[RESP_TEXT], "a spoken summary should be written"
+    assert bridge.props[RESP_READY] == 1
+    assert bridge.props[STATUS] == "idle"
+    assert bridge.props[REQ_TRIGGER] == 0
+    assert backend.said
+
+
+def test_handle_trigger_scenario_deterministic_for_fixed_seed(tmp_path: Path) -> None:
+    """A scenario request is deterministic: same seed -> identical RESP_TEXT."""
+    pic = _synthetic_picture()
+    props = {
+        AIRPORT_ID: pic.icao,
+        REQ_TYPE: "scenario",
+        REQ_CALLSIGN: "N12",
+        REQ_TRIGGER: "1",
+    }
+    sidecar, bridge, backend = _make_with_picture(tmp_path, props, pic)
+    sidecar.handle_trigger()
+    first = bridge.props[RESP_TEXT]
+    assert first, "a scenario summary should be voiced"
+    assert "training scenario" in first.lower()
+
+    # The scenario seed derives from callsign + memory.count; announce handlers
+    # never grow session memory, so a second identical request is byte-identical.
+    bridge.props[REQ_TRIGGER] = "1"
+    sidecar.handle_trigger()
+    second = bridge.props[RESP_TEXT]
+    assert second == first
+    assert bridge.props[RESP_READY] == 1
+    assert bridge.props[REQ_TRIGGER] == 0
+
+
+def test_handle_trigger_career_voices_rank_from_tmp_file(tmp_path: Path) -> None:
+    """A career request with a populated career file voices the computed rank."""
+    import dataclasses
+
+    from sidecar import career
+
+    career_file = tmp_path / "career.json"
+    # 100 points -> "Private" rank (>= 100 threshold).
+    career.save_career(career.CareerStats(landings=10, points=100), career_file)
+
+    pic = _synthetic_picture()
+    props = {
+        AIRPORT_ID: pic.icao,
+        REQ_TYPE: "career",
+        REQ_CALLSIGN: "N12",
+        REQ_TRIGGER: "1",
+    }
+    sidecar, bridge, backend = _make_with_picture(tmp_path, props, pic)
+    sidecar.settings = dataclasses.replace(
+        sidecar.settings, career_path=str(career_file)
+    )
+    sidecar.handle_trigger()
+
+    resp = bridge.props[RESP_TEXT]
+    assert "Private" in resp
+    assert "100 points" in resp
+    assert bridge.props[RESP_READY] == 1
+    assert bridge.props[STATUS] == "idle"
+    assert bridge.props[REQ_TRIGGER] == 0
+    assert backend.said
+
+
+def test_handle_trigger_student_mode_readback_includes_coach_feedback(
+    tmp_path: Path,
+) -> None:
+    """In student mode an incomplete readback appends coach feedback to RESP_TEXT."""
+    pic = _synthetic_picture()
+    props = {
+        AIRPORT_ID: pic.icao,
+        REQ_TYPE: "taxi",
+        REQ_CALLSIGN: "UAL9",
+        REQ_RUNWAY: "28L",
+        POS_LAT: "37.620",
+        POS_LON: "-122.380",
+        REQ_TRIGGER: "1",
+        MODE: "student",
+    }
+    sidecar, bridge, _ = _make_with_picture(tmp_path, props, pic)
+    sidecar.handle_trigger()  # issue the clearance first
+
+    bridge.props[REQ_TYPE] = "readback"
+    bridge.props[READBACK_HEARD] = "wilco"  # nothing salient -> incomplete
+    bridge.props[REQ_TRIGGER] = "1"
+    sidecar.handle_trigger()
+
+    resp = bridge.props[RESP_TEXT]
+    assert "Check your readback" in resp  # coach feedback appended
+    assert "missing:" in resp
+    assert bridge.props[RESP_READY] == 1
+    assert bridge.props[REQ_TRIGGER] == 0
+
+    # Mode-gating: the same incomplete readback in normal mode has no coaching.
+    props_normal = dict(props)
+    props_normal[MODE] = "normal"
+    sc2, bridge2, _ = _make_with_picture(tmp_path, props_normal, pic)
+    sc2.handle_trigger()
+    bridge2.props[REQ_TYPE] = "readback"
+    bridge2.props[READBACK_HEARD] = "wilco"
+    bridge2.props[REQ_TRIGGER] = "1"
+    sc2.handle_trigger()
+    assert "Check your readback" not in bridge2.props[RESP_TEXT]
