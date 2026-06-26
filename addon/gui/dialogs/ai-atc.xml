@@ -67,6 +67,20 @@
     <format>Chatter: %s</format>
     <halign>left</halign>
   </text>
+  <!-- Live airspace class + advisory published by the add-on's publish_airspace().
+       The sidecar also reads these for the airspace_check request. -->
+  <text>
+    <property>/ai-atc/airspace/class</property>
+    <live type="bool">true</live>
+    <format>Airspace: %s</format>
+    <halign>left</halign>
+  </text>
+  <text>
+    <property>/ai-atc/airspace/warning</property>
+    <live type="bool">true</live>
+    <format>%s</format>
+    <halign>left</halign>
+  </text>
 
   <!-- ── Interaction mode (normal / student / checkride) ─────────── -->
   <!-- Each button writes /ai-atc/mode via aiatc.set_mode("..."); the sidecar
@@ -421,6 +435,49 @@
       <binding>
         <command>nasal</command>
         <script>aiatc.request("squawk_7700");</script>
+      </binding>
+    </button>
+  </group>
+
+  <!-- ── Briefings / airspace info ───────────────────────────────── -->
+  <!-- Request tokens consumed by the sidecar: simbrief, fss_briefing, ctaf,
+       airspace_check. Each fires aiatc.request("<token>") exactly like the
+       Departure/Arrival groups; the sidecar maps the token to phraseology. -->
+  <group>
+    <layout>hbox</layout>
+    <default-padding type="int">4</default-padding>
+    <halign>center</halign>
+    <text><label>Briefings:</label></text>
+    <button>
+      <legend>SimBrief</legend>
+      <pref-width type="int">90</pref-width>
+      <binding>
+        <command>nasal</command>
+        <script>aiatc.request("simbrief");</script>
+      </binding>
+    </button>
+    <button>
+      <legend>FSS Brief</legend>
+      <pref-width type="int">90</pref-width>
+      <binding>
+        <command>nasal</command>
+        <script>aiatc.request("fss_briefing");</script>
+      </binding>
+    </button>
+    <button>
+      <legend>CTAF</legend>
+      <pref-width type="int">70</pref-width>
+      <binding>
+        <command>nasal</command>
+        <script>aiatc.request("ctaf");</script>
+      </binding>
+    </button>
+    <button>
+      <legend>Airspace</legend>
+      <pref-width type="int">90</pref-width>
+      <binding>
+        <command>nasal</command>
+        <script>aiatc.request("airspace_check");</script>
       </binding>
     </button>
   </group>

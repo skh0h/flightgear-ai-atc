@@ -1311,3 +1311,137 @@ def test_handle_trigger_fsm_failure_still_writes_response(
     assert bridge.props[RESP_READY] == 1
     assert bridge.props[STATUS] == "idle"
     assert bridge.props[REQ_TRIGGER] == 0
+
+
+# ---------------------------------------------------------------------------
+# Phase 8: grounding / data integrations — airspace check + SimBrief wiring
+# ---------------------------------------------------------------------------
+
+
+def test_handle_trigger_airspace_check_states_class_and_warning(tmp_path: Path) -> None:
+    """An airspace_check request reads the published class + warning and voices
+    a reply that mentions both."""
+    from sidecar.main import AIRSPACE_CLASS, AIRSPACE_WARN
+
+    pic = _synthetic_picture()
+    props = {
+        AIRPORT_ID: pic.icao,
+        REQ_TYPE: "airspace_check",
+        REQ_CALLSIGN: "N12",
+        REQ_RUNWAY: "",
+        POS_LAT: "37.620",
+        POS_LON: "-122.380",
+        REQ_TRIGGER: "1",
+        AIRSPACE_CLASS: "B",
+        AIRSPACE_WARN: "Clearance required before entering.",
+    }
+    sidecar, bridge, backend = _make_with_picture(tmp_path, props, pic)
+    sidecar.handle_trigger()
+
+    resp = bridge.props[RESP_TEXT]
+    assert "Class B" in resp
+    assert "Clearance required before entering." in resp
+    assert bridge.props[RESP_READY] == 1
+    assert bridge.props[STATUS] == "idle"
+    assert bridge.props[REQ_TRIGGER] == 0
+    assert backend.said
+
+
+def test_build_clearance_airspace_check_populates_fields(tmp_path: Path) -> None:
+    """_build_clearance copies the airspace class + warning onto the Clearance."""
+    from sidecar.main import AIRSPACE_CLASS, AIRSPACE_WARN
+
+    pic = _synthetic_picture()
+    props = {
+        AIRPORT_ID: pic.icao,
+        REQ_TYPE: "airspace_check",
+        REQ_CALLSIGN: "N12",
+        POS_LAT: "37.620",
+        POS_LON: "-122.380",
+        AIRSPACE_CLASS: "C",
+        AIRSPACE_WARN: "Establish two-way radio communication.",
+    }
+    sidecar, _, _ = _make_with_picture(tmp_path, props, pic)
+    clearance = sidecar._build_clearance("airspace_check", "N12", pic)
+    assert clearance.airspace_class == "C"
+    assert clearance.airspace_warning == "Establish two-way radio communication."
+
+
+def test_handle_trigger_simbrief_confirms_plan(tmp_path: Path) -> None:
+    """A simbrief request with route/destination/altitude props confirms the
+    imported plan in RESP_TEXT."""
+    from sidecar.main import REQ_ALTITUDE, REQ_DESTINATION, REQ_ROUTE
+
+    pic = _synthetic_picture()
+    props = {
+        AIRPORT_ID: pic.icao,
+        REQ_TYPE: "simbrief",
+        REQ_CALLSIGN: "UAL123",
+        REQ_RUNWAY: "",
+        POS_LAT: "37.620",
+        POS_LON: "-122.380",
+        REQ_TRIGGER: "1",
+        REQ_ROUTE: "SID then as filed",
+        REQ_DESTINATION: "KLAX",
+        REQ_ALTITUDE: "FL350",
+    }
+    sidecar, bridge, backend = _make_with_picture(tmp_path, props, pic)
+    sidecar.handle_trigger()
+
+    assert bridge.props[RESP_TEXT] == (
+        "UAL123, flight plan confirmed: KLAX via SID then as filed, "
+        "climb maintain FL350."
+    )
+    assert bridge.props[RESP_READY] == 1
+    assert bridge.props[STATUS] == "idle"
+    assert bridge.props[REQ_TRIGGER] == 0
+    assert backend.said
+
+
+def test_build_clearance_simbrief_populates_plan_fields(tmp_path: Path) -> None:
+    """_build_clearance copies the SimBrief request fields onto the Clearance and
+    leaves frequency empty (no controller-contact tail)."""
+    from sidecar.main import REQ_ALTITUDE, REQ_DESTINATION, REQ_ROUTE
+
+    pic = _synthetic_picture()
+    props = {
+        AIRPORT_ID: pic.icao,
+        REQ_TYPE: "simbrief",
+        REQ_CALLSIGN: "UAL123",
+        REQ_RUNWAY: "",
+        POS_LAT: "37.620",
+        POS_LON: "-122.380",
+        REQ_ROUTE: "DCT",
+        REQ_DESTINATION: "KLAX",
+        REQ_ALTITUDE: "6000",
+    }
+    sidecar, _, _ = _make_with_picture(tmp_path, props, pic)
+    clearance = sidecar._build_clearance("simbrief", "UAL123", pic)
+    assert clearance.destination == "KLAX"
+    assert clearance.route == "DCT"
+    assert clearance.altitude == "6000"
+    assert clearance.frequency == ""
+
+
+def test_handle_trigger_ctaf_self_announce_no_contact_tail(tmp_path: Path) -> None:
+    """A ctaf request voices a self-announce with no controller-contact tail."""
+    pic = _synthetic_picture()
+    props = {
+        AIRPORT_ID: pic.icao,
+        REQ_TYPE: "ctaf",
+        REQ_CALLSIGN: "N12345",
+        REQ_RUNWAY: "",
+        POS_LAT: "37.620",
+        POS_LON: "-122.380",
+        REQ_TRIGGER: "1",
+    }
+    sidecar, bridge, backend = _make_with_picture(tmp_path, props, pic)
+    sidecar.handle_trigger()
+
+    resp = bridge.props[RESP_TEXT]
+    assert "N12345" in resp
+    assert "Contact" not in resp
+    assert bridge.props[RESP_READY] == 1
+    assert bridge.props[STATUS] == "idle"
+    assert bridge.props[REQ_TRIGGER] == 0
+    assert backend.said

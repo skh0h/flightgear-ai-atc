@@ -76,6 +76,12 @@ REQ_DESTINATION = "/ai-atc/request/destination"
 REQ_ALTITUDE = "/ai-atc/request/altitude"
 REQ_SQUAWK = "/ai-atc/request/squawk"
 
+# --- Phase 8: grounding / data integrations ---------------------------------
+# Nasal (or a future grounding helper) publishes the current airspace class and
+# any advisory warning; the sidecar reads them for an ``airspace_check`` reply.
+AIRSPACE_CLASS = "/ai-atc/airspace/class"
+AIRSPACE_WARN = "/ai-atc/airspace/warning"
+
 # --- Phase 4: personality / session memory / modes --------------------------
 # Nasal publishes MODE + LOCAL_HOUR; sidecar publishes CONTROLLER_NAME.
 MODE = "/ai-atc/mode"  # normal | student | checkride (default normal)
@@ -537,6 +543,26 @@ class Sidecar:
             except Exception:
                 _log.debug("nearest-airport read failed", exc_info=True)
 
+        # Phase 8: SimBrief plan confirmation — reuse the IFR request mailbox
+        # (route/destination/altitude) to confirm the imported flight plan.
+        sb_route = sb_dest = sb_alt = ""
+        if eff_type == "simbrief":
+            try:
+                sb_route = _clean_fg_str(self.bridge.get(REQ_ROUTE) or "")
+                sb_dest = _clean_fg_str(self.bridge.get(REQ_DESTINATION) or "")
+                sb_alt = _clean_fg_str(self.bridge.get(REQ_ALTITUDE) or "")
+            except Exception:
+                _log.debug("simbrief field read failed", exc_info=True)
+
+        # Phase 8: airspace check — current class + advisory published by Nasal.
+        airspace_class = airspace_warning = ""
+        if eff_type == "airspace_check":
+            try:
+                airspace_class = _clean_fg_str(self.bridge.get(AIRSPACE_CLASS) or "")
+                airspace_warning = _clean_fg_str(self.bridge.get(AIRSPACE_WARN) or "")
+            except Exception:
+                _log.debug("airspace check read failed", exc_info=True)
+
         return Clearance(
             callsign=eff_callsign,
             clearance_type=eff_type,
@@ -546,11 +572,17 @@ class Sidecar:
             aircraft_type=aircraft_type,
             remarks=remarks,
             divert_target=divert_target,
-            route=ifr_route,
-            destination=ifr_dest,
-            altitude=ifr_alt,
+            # IFR CRAFT fields double as SimBrief plan fields (mutually exclusive
+            # by req type, so ``or`` simply picks whichever path populated them).
+            route=ifr_route or sb_route,
+            destination=ifr_dest or sb_dest,
+            altitude=ifr_alt or sb_alt,
             squawk=ifr_squawk,
+            # ``frequency`` stays "" for ctaf so phrase_offline adds no controller
+            # contact tail; it is only the CRAFT departure freq for ifr_clearance.
             frequency=ifr_dep_freq,
+            airspace_class=airspace_class,
+            airspace_warning=airspace_warning,
         )
 
     # ------------------------------------------------------------------

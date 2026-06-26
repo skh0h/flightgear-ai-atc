@@ -12,6 +12,8 @@
 #                               emergency: "mayday" | "pan_pan" | "gear_emergency" |
 #                                          "min_fuel" | "diversion" | "go_around" |
 #                                          "squawk_7500" | "squawk_7600" | "squawk_7700"
+#                               info:      "ctaf" | "fss_briefing" | "simbrief" |
+#                                          "airspace_check"
 #   /ai-atc/request/callsign  (string) aircraft callsign, e.g. "N12345"
 #   /ai-atc/request/runway    (string) requested/active runway, e.g. "28R"
 #   /ai-atc/request/destination (string) IFR destination ICAO, best-effort from the
@@ -46,6 +48,12 @@
 #                               sidecar; shown live in the dialog header
 #   /ai-atc/chatter           (string) one ambient-chatter line published by the sidecar;
 #                               shown live in the dialog ("Chatter: %s")
+#   /ai-atc/airspace/class    (string) coarse airspace class published by the add-on's
+#                               publish_airspace() (default "G"); read by the sidecar for
+#                               the airspace_check request and shown live ("Airspace: %s")
+#   /ai-atc/airspace/warning  (string) human-readable airspace advisory published by
+#                               publish_airspace() (default ""); read by the sidecar and
+#                               shown live in the dialog
 #
 # The Python sidecar polls /ai-atc/request/trigger over the FG telnet interface.
 # When triggered it reads context props, generates a clearance, writes
@@ -107,6 +115,12 @@ var _set_defaults = func {
     # Ambient-chatter line published by the sidecar; seeded blank so the dialog's
     # live "Chatter: %s" binding renders before the first chatter line arrives.
     setprop(ROOT ~ "/chatter", "");
+    # Airspace classification + advisory published by publish_airspace(); seeded
+    # with the conservative default class "G" (uncontrolled) and no warning so the
+    # dialog's live bindings and the sidecar's airspace_check both see well-formed
+    # values before the first publish.
+    setprop(ROOT ~ "/airspace/class", "G");
+    setprop(ROOT ~ "/airspace/warning", "");
 };
 
 # Append one line to the scrolling transcript.
@@ -305,6 +319,40 @@ var publish_nearest_airport = func {
     # _err intentionally ignored — nearest-airport data is optional.
 };
 
+# Best-effort: publish the aircraft's current airspace classification to
+# /ai-atc/airspace/class (default "G") and a human-readable advisory to
+# /ai-atc/airspace/warning (default ""). The base FlightGear package does not
+# expose a reliable nearest-airspace-class property, so this is intentionally
+# conservative: it derives a coarse class from real, deterministic NAS rules
+# (Class A is 18,000 ft MSL to FL600) when altitude is available, and otherwise
+# leaves the seeded defaults in place rather than fabricating a lateral class.
+# The whole body runs inside a call() guard so a missing or odd property simply
+# does nothing and never throws.
+var publish_airspace = func {
+    var _err = [];
+    call(func {
+        # Start from whatever is already published (seeded "G"), never blank.
+        var cls = getprop(ROOT ~ "/airspace/class");
+        if (cls == nil or cls == "") cls = "G";
+        var warn = "";
+
+        # Coarse MSL-altitude rule: at/above 18,000 ft is Class A in the US NAS,
+        # where an IFR clearance is required. Below that we cannot reliably
+        # classify lateral airspace from base properties, so keep the default.
+        var alt_ft = getprop("/position/altitude-ft");
+        if (alt_ft != nil and alt_ft >= 18000) {
+            cls = "A";
+            warn = "Class A: IFR clearance required at/above FL180";
+        } else {
+            cls = "G";
+        }
+
+        setprop(ROOT ~ "/airspace/class", cls);
+        setprop(ROOT ~ "/airspace/warning", warn);
+    }, nil, _err);
+    # _err intentionally ignored — airspace data is best-effort/optional.
+};
+
 # Best-effort: publish the active flightplan from FlightGear's route-manager into
 # the /ai-atc/request/{destination,route,altitude} mailbox so the sidecar can
 # phrase an 'ifr_clearance' (e.g. "cleared to KLAX via DCT, climb and maintain
@@ -371,6 +419,8 @@ var _last_heartbeat = -2;  # sentinel: -2 = never seen, -1 = FG default
 var _heartbeat_timer = nil;
 # Periodic timer that republishes /ai-atc/local-hour from sim time (~60 s).
 var _local_hour_timer = nil;
+# Periodic timer that republishes /ai-atc/airspace/{class,warning} (~45 s).
+var _airspace_timer = nil;
 
 var _update_backend_status = func {
     var hb = getprop(ROOT ~ "/sidecar/heartbeat");
@@ -441,6 +491,12 @@ var main = func(addon) {
     _local_hour_timer = maketimer(60, publish_local_hour);
     _local_hour_timer.start();
 
+    # Publish the airspace class/advisory now and refresh it every ~45 s so the
+    # dialog's live bindings and the sidecar's airspace_check see a current value.
+    publish_airspace();
+    _airspace_timer = maketimer(45, publish_airspace);
+    _airspace_timer.start();
+
     # Publish airport data for the current airport at startup.
     var icao = getprop("/sim/presets/airport-id");
     publish_airport_data(icao);
@@ -476,6 +532,10 @@ var unload = func(addon) {
     if (_local_hour_timer != nil) {
         _local_hour_timer.stop();
         _local_hour_timer = nil;
+    }
+    if (_airspace_timer != nil) {
+        _airspace_timer.stop();
+        _airspace_timer = nil;
     }
     print("[AI ATC] addon unloaded");
 };

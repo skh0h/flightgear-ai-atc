@@ -47,6 +47,10 @@ class Clearance:
     hold_fix: str = ""  # holding fix ident
     hold_direction: str = ""  # holding direction (e.g. "north")
     efc: str = ""  # expect-further-clearance time / EDCT wheels-up window
+    # Phase 8: grounding / data-integration fields (all defaulted so existing
+    # constructors and tests are unaffected).
+    airspace_class: str = ""  # current airspace class letter (A-G), for airspace_check
+    airspace_warning: str = ""  # optional Brasher / airspace advisory appended to it
 
 
 class PhraseResult(BaseModel):
@@ -211,6 +215,39 @@ def phrase_offline(clearance: Clearance) -> str:
                 f"{callsign}, ground stop in effect, "
                 f"expect a wheels-up time shortly."
             )
+    elif ctype == "ctaf":
+        # Uncontrolled-field self-announce: the pilot broadcasts blind on the
+        # CTAF, so there is NO controller handoff.  Return early so the shared
+        # "Contact <freq>." / remarks tail is never appended (the call is a
+        # pilot advisory, not an instruction from a controller).
+        intentions = clearance.remarks or "taxiing for departure"
+        runway = _safe_rwy(clearance.active_runway)
+        if runway:
+            return f"Traffic, {callsign}, {intentions}, runway {runway}, traffic."
+        return f"Traffic, {callsign}, {intentions}, traffic."
+    elif ctype == "fss_briefing":
+        # Short spoken Flight Service summary line.  The full multi-line briefing
+        # is assembled by briefing.fss_briefing elsewhere; ``remarks`` carries
+        # that summary when supplied.  Return early so the embedded ``remarks``
+        # is not double-appended by the shared remarks tail.
+        summary = clearance.remarks or (
+            "briefing on request, VFR not recommended check NOTAMs and TFRs."
+        )
+        return f"{callsign}, Flight Service, {summary}"
+    elif ctype == "simbrief":
+        sentence = (
+            f"{callsign}, flight plan confirmed: "
+            f"{clearance.destination or 'destination'} via "
+            f"{clearance.route or 'filed route'}, "
+            f"climb maintain {clearance.altitude or 'filed altitude'}."
+        )
+    elif ctype == "airspace_check":
+        sentence = (
+            f"{callsign}, you are currently in Class "
+            f"{clearance.airspace_class or 'G'} airspace."
+        )
+        if clearance.airspace_warning:
+            sentence += " " + clearance.airspace_warning
     else:  # taxi (default)
         parts = [f"{callsign}, taxi"]
         if _safe_rwy(clearance.active_runway):
@@ -297,6 +334,10 @@ _TYPE_GUIDANCE = {
     "arrival_clearance": "For an arrival clearance, give the approach to expect and the descent or crossing restriction.",
     "expect_approach": "For an expect-approach advisory, tell the pilot which approach and runway to expect.",
     "flow_control": "For flow control, advise the ground stop or EDCT wheels-up window as a traffic-management initiative.",
+    "ctaf": "For a CTAF self-announce at an uncontrolled field, broadcast the field, the callsign, and the position or intentions as a blind pilot advisory with no controller handoff.",
+    "fss_briefing": "For a flight-service briefing, deliver a concise Flight Service summary of weather, NOTAMs, and TFRs on request.",
+    "simbrief": "For an imported flight plan, confirm the destination, the filed route, and the planned cruise altitude back to the pilot.",
+    "airspace_check": "For an airspace check, state the current airspace class letter and read back any associated warning or advisory.",
 }
 
 
