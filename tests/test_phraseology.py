@@ -765,3 +765,134 @@ def test_build_prompt_includes_type_guidance_for_ifr_clearance() -> None:
     c = Clearance(callsign="UAL1", clearance_type="ifr_clearance", destination="KLAX")
     prompt = _build_prompt(c)
     assert _TYPE_GUIDANCE["ifr_clearance"] in prompt
+
+
+# ---------------------------------------------------------------------------
+# Phase 8: CTAF, FSS briefing, SimBrief, airspace check — offline templates
+# (exact) + online return/fallback + guidance.
+# ---------------------------------------------------------------------------
+
+
+def test_phrase_offline_ctaf_self_announce_exact() -> None:
+    """CTAF self-announce is a blind pilot advisory with no controller handoff."""
+    c = Clearance(callsign="N12345", clearance_type="ctaf", active_runway="28")
+    out = phrase_offline(c)
+    assert out == "Traffic, N12345, taxiing for departure, runway 28, traffic."
+    assert "N12345" in out
+    assert "Contact" not in out  # no controller-handoff tail on a self-announce
+
+
+def test_phrase_offline_ctaf_uses_remarks_as_intentions() -> None:
+    c = Clearance(
+        callsign="N1", clearance_type="ctaf", remarks="back-taxiing runway 9"
+    )
+    assert phrase_offline(c) == "Traffic, N1, back-taxiing runway 9, traffic."
+
+
+def test_phrase_offline_ctaf_suppresses_frequency_tail() -> None:
+    """Even when frequency is set, ctaf never appends a 'Contact <freq>.' tail."""
+    c = Clearance(
+        callsign="N12345", clearance_type="ctaf", active_runway="28", frequency="122.8"
+    )
+    out = phrase_offline(c)
+    assert "Contact" not in out
+    assert "122.8" not in out
+
+
+def test_phrase_offline_fss_briefing_default_exact() -> None:
+    c = Clearance(callsign="N12345", clearance_type="fss_briefing")
+    assert phrase_offline(c) == (
+        "N12345, Flight Service, briefing on request, "
+        "VFR not recommended check NOTAMs and TFRs."
+    )
+
+
+def test_phrase_offline_fss_briefing_with_remarks_no_double_append() -> None:
+    c = Clearance(
+        callsign="N1", clearance_type="fss_briefing", remarks="VFR not recommended."
+    )
+    out = phrase_offline(c)
+    assert out == "N1, Flight Service, VFR not recommended."
+    assert out.count("VFR not recommended.") == 1  # remarks not double-appended
+
+
+def test_phrase_offline_simbrief_exact() -> None:
+    c = Clearance(
+        callsign="UAL123",
+        clearance_type="simbrief",
+        destination="KLAX",
+        route="SID then as filed",
+        altitude="FL350",
+    )
+    assert phrase_offline(c) == (
+        "UAL123, flight plan confirmed: KLAX via SID then as filed, "
+        "climb maintain FL350."
+    )
+
+
+def test_phrase_offline_simbrief_generic_without_fields() -> None:
+    c = Clearance(callsign="N12", clearance_type="simbrief")
+    assert phrase_offline(c) == (
+        "N12, flight plan confirmed: destination via filed route, "
+        "climb maintain filed altitude."
+    )
+
+
+def test_phrase_offline_airspace_check_with_warning_exact() -> None:
+    c = Clearance(
+        callsign="N12",
+        clearance_type="airspace_check",
+        airspace_class="B",
+        airspace_warning="Clearance required before entering.",
+    )
+    assert phrase_offline(c) == (
+        "N12, you are currently in Class B airspace. "
+        "Clearance required before entering."
+    )
+
+
+def test_phrase_offline_airspace_check_defaults_to_class_g() -> None:
+    c = Clearance(callsign="N12", clearance_type="airspace_check")
+    assert phrase_offline(c) == "N12, you are currently in Class G airspace."
+
+
+def test_phrase_online_returns_model_text_for_airspace_check() -> None:
+    client = _FakeClient(
+        response=PhraseResult(text="November 12, you are in Class Bravo airspace.")
+    )
+    c = Clearance(callsign="N12", clearance_type="airspace_check", airspace_class="B")
+    assert phrase_online(c, client) == "November 12, you are in Class Bravo airspace."  # type: ignore[arg-type]
+    assert client.calls == 1
+
+
+def test_phrase_online_falls_back_for_airspace_check_on_offline_error() -> None:
+    client = _FakeClient(raise_offline=True)
+    c = Clearance(
+        callsign="N12",
+        clearance_type="airspace_check",
+        airspace_class="B",
+        airspace_warning="Clearance required before entering.",
+    )
+    assert phrase_online(c, client) == phrase_offline(c)  # type: ignore[arg-type]
+
+
+def test_phrase_online_falls_back_for_simbrief_on_offline_error() -> None:
+    client = _FakeClient(raise_offline=True)
+    c = Clearance(
+        callsign="UAL123",
+        clearance_type="simbrief",
+        destination="KLAX",
+        route="DCT",
+        altitude="FL350",
+    )
+    assert phrase_online(c, client) == phrase_offline(c)  # type: ignore[arg-type]
+
+
+def test_build_prompt_includes_type_guidance_for_phase8_tokens() -> None:
+    from sidecar.phraseology import _TYPE_GUIDANCE, _build_prompt
+
+    for ctype in ("ctaf", "fss_briefing", "simbrief", "airspace_check"):
+        c = Clearance(callsign="N12", clearance_type=ctype)
+        prompt = _build_prompt(c)
+        assert _TYPE_GUIDANCE[ctype] in prompt
+        assert "aircraft type" not in prompt
