@@ -75,6 +75,21 @@ def test_parse_error_on_malformed_xml() -> None:
         parse_groundnet("<groundnet><TaxiNodes><node", "BAD")
 
 
+def test_parse_error_on_empty_string() -> None:
+    with pytest.raises(ParseError, match="empty"):
+        parse_groundnet("", "BAD")
+
+
+def test_parse_error_on_whitespace_only() -> None:
+    with pytest.raises(ParseError, match="empty"):
+        parse_groundnet("   \n\t  ", "BAD")
+
+
+def test_parse_error_on_malformed_xml_has_helpful_message() -> None:
+    with pytest.raises(ParseError, match="(?i)malformed.*ZZZZ"):
+        parse_groundnet("<groundnet><node", "ZZZZ")
+
+
 def test_parse_error_on_wrong_root() -> None:
     with pytest.raises(ParseError):
         parse_groundnet("<notgroundnet/>", "BAD")

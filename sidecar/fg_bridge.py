@@ -68,6 +68,12 @@ class FGTelnetBridge:
     # Connection management
     # ------------------------------------------------------------------
 
+    # FlightGear's telnet server sends a one-line banner like
+    #   "FlightGear Telnet server\r\n"
+    # and may also send a bare "> " prompt before replying to commands.
+    # We consume both here so they don't pollute get() replies.
+    _PROMPT = b"> "
+
     def connect(
         self,
         *,
@@ -76,6 +82,8 @@ class FGTelnetBridge:
         _sleep: Callable[[float], None] = time.sleep,
     ) -> None:
         """Open the socket, retrying with exponential back-off.
+
+        Consumes FlightGear's initial connection banner on success.
 
         Raises:
             BridgeError: If all attempts fail (FlightGear never came up).
@@ -88,6 +96,7 @@ class FGTelnetBridge:
                 sock.connect((self._host, self._port))
                 self._sock = sock
                 self._buf = b""
+                self._drain_banner()
                 return
             except OSError as exc:
                 last_exc = exc
@@ -97,6 +106,34 @@ class FGTelnetBridge:
             f"could not connect to FlightGear telnet at {self._host}:{self._port}: "
             f"{last_exc}"
         )
+
+    def _drain_banner(self) -> None:
+        """Consume the server's welcome banner line (if any) after connect.
+
+        FlightGear emits one text line on connect before it accepts commands.
+        We read bytes already in the kernel receive buffer (non-blocking peek),
+        then discard the first newline-terminated line if present.
+        If the buffer contains no newline yet we leave it for _readline —
+        the first real get() reply will contain the rest.
+        """
+        if self._sock is None:
+            return
+        try:
+            # Non-blocking peek: drain whatever is already in the receive buffer.
+            self._sock.settimeout(0.0)
+            try:
+                chunk = self._sock.recv(4096)
+                if chunk:
+                    self._buf += chunk
+            except OSError:
+                pass  # nothing buffered yet — that's fine
+            finally:
+                self._sock.settimeout(self._timeout)
+            # Discard up to and including the first newline (the banner line).
+            if b"\n" in self._buf:
+                _, _, self._buf = self._buf.partition(b"\n")
+        except OSError:
+            pass
 
     @property
     def connected(self) -> bool:
@@ -116,15 +153,31 @@ class FGTelnetBridge:
         sock.sendall((line + "\r\n").encode("utf-8"))
 
     def _readline(self) -> str:
+        """Read one line from the telnet stream.
+
+        Skips bare ``> `` prompt lines that FlightGear inserts between replies.
+
+        Raises:
+            BridgeError: When the peer closes the connection mid-read (empty
+                recv), so callers get a hard error rather than a silent empty
+                string that would be misinterpreted as a valid property value.
+        """
         sock = self._require_sock()
-        while b"\n" not in self._buf:
-            chunk = sock.recv(4096)
-            if not chunk:  # peer closed
-                break
-            self._buf += chunk
-        line, _, rest = self._buf.partition(b"\n")
-        self._buf = rest
-        return line.decode("utf-8", "replace").rstrip("\r")
+        while True:
+            while b"\n" not in self._buf:
+                chunk = sock.recv(4096)
+                if not chunk:  # peer closed
+                    raise BridgeError(
+                        "FlightGear closed the telnet connection unexpectedly"
+                    )
+                self._buf += chunk
+            line, _, rest = self._buf.partition(b"\n")
+            self._buf = rest
+            decoded = line.decode("utf-8", "replace").rstrip("\r")
+            # Discard bare prompt lines that FlightGear may inject.
+            if decoded.strip() == ">":
+                continue
+            return decoded
 
     # ------------------------------------------------------------------
     # Property operations

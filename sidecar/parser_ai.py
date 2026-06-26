@@ -58,12 +58,18 @@ def parse_with_ai(
     *,
     airportinfo: dict | None = None,
     model: str | None = None,
+    ai_taxiway_labels: bool = False,
 ) -> AirportPicture:
-    """Parse a groundnet with Gemini labeling, falling back to code parser offline.
+    """Parse a groundnet with optional Gemini labeling, falling back to code parser.
 
-    The code parser runs unconditionally to produce all geometry.  Gemini then
-    supplies taxiway labels for unnamed segments; those labels are merged onto
-    the code-parser result before returning.
+    In data-only mode (``ai_taxiway_labels=False``, the default), the Gemini API
+    is never called and the returned picture contains only real groundnet names.
+    This is the safe default: AI-inferred taxiway names are unverified guesses
+    with no chart or AIRAC grounding.
+
+    When ``ai_taxiway_labels=True``, Gemini supplies labels for *unnamed*
+    segments only — segments that already carry a real groundnet name are never
+    overwritten.
 
     Args:
         icao: ICAO identifier to stamp on the result.
@@ -72,15 +78,22 @@ def parse_with_ai(
         airportinfo: Optional in-sim runway/frequency data; forwarded to
             :func:`parser_code.parse_groundnet` which handles it authoritatively.
         model: Optional Gemini model override.
+        ai_taxiway_labels: When False (default), skip Gemini entirely and return
+            only real groundnet names.  When True, apply Gemini labels to unnamed
+            segments only.
 
     Returns:
-        An :class:`AirportPicture` — ``source="ai"`` on success, ``source="code"``
-        if Gemini is unavailable.
+        An :class:`AirportPicture` — ``source="ai"`` when Gemini labels were
+        applied, ``source="code"`` otherwise (data-only mode or Gemini offline).
     """
     # Step 1: always get full geometry from the deterministic code parser.
     base = parser_code.parse_groundnet(
         groundnet_xml_text, icao, airportinfo=airportinfo
     )
+
+    # Data-only mode: skip Gemini entirely — no API call, no unverified labels.
+    if not ai_taxiway_labels:
+        return base  # source="code", only real groundnet names present
 
     # Step 2: ask Gemini for taxiway labels only.
     prompt = _PROMPT_TEMPLATE.format(icao=icao, xml=groundnet_xml_text)
@@ -96,7 +109,8 @@ def parse_with_ai(
         )
         return base  # source="code", all fields already set
 
-    # Step 3: merge AI labels onto code-parser segments.
+    # Step 3: merge AI labels onto code-parser segments — additive only.
+    # A real groundnet name (non-empty) is NEVER overwritten by a Gemini guess.
     # Build an undirected lookup: both (begin,end) and (end,begin) -> name.
     label_map: dict[tuple[int, int], str] = {}
     for lbl in ai.taxiway_labels:
@@ -107,10 +121,11 @@ def parse_with_ai(
     if label_map:
         merged_segments = []
         for seg in base.segments:
-            key = (seg.begin, seg.end)
-            ai_name = label_map.get(key)
-            if ai_name is not None:
-                seg = seg.model_copy(update={"name": ai_name})
+            # Guard: only apply AI label when the segment has no real name.
+            if not seg.name:
+                ai_name = label_map.get((seg.begin, seg.end))
+                if ai_name:
+                    seg = seg.model_copy(update={"name": ai_name})
             merged_segments.append(seg)
     else:
         merged_segments = list(base.segments)

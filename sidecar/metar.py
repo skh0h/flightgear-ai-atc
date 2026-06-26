@@ -9,8 +9,11 @@ runway fallback — mirroring the sidecar offline contract.
 Wind-group parsing decisions:
   - ``dddssKT``     → (ddd, ss)
   - ``dddssGppKT``  → (ddd, ss)  — steady speed only, gust ignored
+  - ``dddssMPS``    → (ddd, ss*1.94384 rounded)  — metres/second (Russia/China)
+  - ``dddssGppMPS`` → (ddd, ss*1.94384 rounded)  — steady speed only, gust ignored
   - ``VRBssKT``     → None        — variable direction: caller uses calm fallback
   - ``00000KT``     → (0.0, 0.0) — calm
+  - ``00000MPS``    → (0.0, 0.0) — calm
   - Any parse error → None
 """
 
@@ -28,13 +31,16 @@ _METAR_URL = (
 )
 _TIMEOUT_SEC = 5.0
 
-# Matches: dddssKT or dddssGppKT (steady + optional gust)
+# Conversion factor: 1 metre/second = 1.94384 knots
+_MPS_TO_KT = 1.94384
+
+# Matches: dddssKT, dddssGppKT, dddssMPS, dddssGppMPS (steady + optional gust)
 _WIND_RE = re.compile(
     r"\b"
     r"(?P<dir>\d{3}|VRB)"           # 3-digit direction or VRB
     r"(?P<speed>\d{2,3})"           # speed (2–3 digits)
     r"(?:G\d{2,3})?"                # optional gust (ignored)
-    r"KT"
+    r"(?P<unit>KT|MPS)"            # unit: knots or metres/second
     r"\b"
 )
 
@@ -80,7 +86,13 @@ def _parse_wind(raw_metar: str) -> tuple[float, float] | None:
         # Variable direction — caller should treat as calm/unknown
         return None
     wind_dir = float(m.group("dir"))
-    wind_kt = float(m.group("speed"))
+    speed = float(m.group("speed"))
+    if m.group("unit") == "MPS":
+        # Metres/second (Russia/China): convert to knots, round to whole knots
+        # to match the whole-knot resolution of the KT form.
+        wind_kt = float(round(speed * _MPS_TO_KT))
+    else:
+        wind_kt = speed
     return (wind_dir, wind_kt)
 
 

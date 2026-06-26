@@ -83,3 +83,57 @@
 - aviationweather.gov: live METAR for ATIS/altimeter
 - SimBrief: flight-plan import
 - X-Plane CIFP: SIDs/STARs/approaches (procedural)
+
+---
+
+## ✅ Committed Spec: Airport Configuration & Traffic Sequencing
+
+**Why:** Turns the add-on from an ATC *narrator* into an ATC that *runs the airport* — the single biggest differentiator vs. Red Griffin. Delivered as one "Airport Configuration" panel with a **mode toggle**.
+
+### Mode A — Controller (Solo)
+- User opens the config panel and marks runways **active / inactive**.
+- No AI traffic involved. Clearances issued against the user's chosen active runway(s).
+- Wind-based auto-select still runs, but **only among active runways**.
+- Feasibility: **HIGH** — fully buildable today, no AI dependency.
+
+### Mode B — Blend In (Live Traffic)
+- Add-on **reads** surrounding AI / multiplayer aircraft and **sequences the *user*** into the flow: *"You're number 3, follow the 737 on a 4-mile final, extend your downwind."*
+- The AI planes keep running their own logic — **we never command them**, only the human pilot (who actually obeys). This is what makes the feature tractable.
+- Feasibility: **MEDIUM** — read + sequence is feasible; depends on traffic being present.
+
+### Why this two-mode split is the right design
+The only blocked capability in FlightGear is *controlling* AI aircraft (no property exists to route an AI plane to a runway). Both modes route around it — Mode A involves no AI at all; Mode B reads AI but issues instructions only to the user. The "ATC actively vectors the whole AI fleet" version stays on the backlog.
+
+### Feasibility summary (codebase recon, 2026-06-24)
+
+| Piece | Verdict | Notes |
+|---|---|---|
+| Active/inactive runway state | HIGH | Add `active: bool` to `Runway`; filter before wind-scoring |
+| Config screen UI | HIGH | Extend existing PropertyList dialog `addon/gui/dialogs/ai-atc.xml` |
+| Reading AI positions | MEDIUM | Poll `/ai/models/` over existing telnet bridge, or aggregate in Nasal |
+| Sequencing logic | MEDIUM | Distance/time-to-threshold; snap planes to existing groundnet graph |
+| Controlling AI planes | LOW / BLOCKED | No FG property to route an AI aircraft; out of scope by design |
+
+### Reuses (no new subsystems)
+- `sidecar/runway_selection.py` — wind-based `select_departure_runway()` (filter to active)
+- `sidecar/airport_picture.py` — `Runway` model gains an `active: bool` field
+- `sidecar/routing.py` / `parser_code.py` — groundnet graph for snapping AI positions to the field
+- `sidecar/phraseology.py` — online + offline clearance text (new sequencing templates/prompts)
+- `sidecar/fg_bridge.py` — same telnet/HTTP bridge, pointed at `/ai/models/`
+- `addon/gui/dialogs/ai-atc.xml` + `addon/addon-main.nas` — extend the existing dialog + mailbox
+
+### Sketch of moving parts
+- Data model: `Runway.active: bool = True`.
+- Mailbox (new properties): `/ai-atc/config/mode` (`controller` | `blend_in`), `/ai-atc/config/runway[N]/active`; for Mode B, aggregated `/ai-atc/ai-traffic/aircraft[N]/{callsign,position,heading,dist_to_threshold,seq_position}`.
+- Read path (Mode B): enumerate `/ai/models/aircraft[N]` and `/ai/models/multiplayer[N]` → lat/lon/alt/heading/speed/callsign → snap to nearest groundnet node/segment → compute sequence.
+- UI: add a mode toggle + per-runway active checkbox list to `ai-atc.xml`; for Mode B, show the live landing queue in the transcript/status area.
+
+### Open questions (decide before building)
+1. Traffic source for Mode B: FlightGear built-in AI Traffic schedules, live multiplayer, or spawn our own controllable traffic?
+2. Scope of "blend in": arrivals only (landing sequence) first, or also ground + departures?
+3. Output channel: text-in-dialog only (v1 style) vs. spoken sequencing via the TTS path.
+
+### Suggested phasing (non-binding — build order deferred)
+1. Mode A: config screen + `active` flag + filtered runway selection.
+2. Mode B read-only: enumerate `/ai/models/`, snap to groundnet, **display** a live landing queue.
+3. Mode B sequencing: compute the user's slot + phraseology ("number 3, follow the 737").

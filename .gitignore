@@ -21,3 +21,10 @@ fixtures/*.generated.*
 
 # Claude tooling
 .claude-mpm/
+.claude/
+
+# Sidecar runtime log
+sidecar.log
+
+# Backup / scratch artifacts
+*.stub-bak

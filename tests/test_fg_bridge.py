@@ -141,3 +141,75 @@ def test_subscribe_fires_only_on_change() -> None:
         "/ai-atc/request/trigger", seen.append, count=4, _sleep=_noop
     )
     assert seen == ["0", "1"]
+
+
+# ---------------------------------------------------------------------------
+# Banner drain: connection banner is consumed transparently
+# ---------------------------------------------------------------------------
+
+
+def test_banner_drained_transparently() -> None:
+    """A FG-style banner line is consumed during connect() and does not corrupt get()."""
+
+    def responder(cmd: str) -> str:
+        if cmd.startswith("get /sim/aircraft"):
+            return "/sim/aircraft = 'c172p' (string)\r\n"
+        return ""
+
+    sock = _FakeSocket(responder)
+    # Pre-load the banner into the recv buffer before connect runs drain.
+    sock._recv_buf = b"FlightGear Telnet server\r\n"
+
+    bridge = FGTelnetBridge(socket_factory=_factory_returning(sock))
+    bridge.connect(_sleep=_noop)
+
+    # The banner should be gone; get() should return the real reply.
+    assert bridge.get("/sim/aircraft") == "c172p"
+
+
+# ---------------------------------------------------------------------------
+# Prompt drain: stray "> " prompt lines are skipped
+# ---------------------------------------------------------------------------
+
+
+def test_prompt_lines_skipped() -> None:
+    """Bare '>' lines injected between replies are silently discarded."""
+
+    call_count = [0]
+
+    def responder(cmd: str) -> str:
+        if cmd.startswith("get /ai-atc/status"):
+            call_count[0] += 1
+            # First call: inject a prompt line before the real reply.
+            if call_count[0] == 1:
+                return ">\r\n/ai-atc/status = 'idle' (string)\r\n"
+            return "/ai-atc/status = 'idle' (string)\r\n"
+        return ""
+
+    sock = _FakeSocket(responder)
+    bridge = FGTelnetBridge(socket_factory=_factory_returning(sock))
+    bridge.connect(_sleep=_noop)
+
+    assert bridge.get("/ai-atc/status") == "idle"
+
+
+# ---------------------------------------------------------------------------
+# Peer-close raises BridgeError
+# ---------------------------------------------------------------------------
+
+
+class _ClosingSocket(_FakeSocket):
+    """A fake socket that returns empty bytes from recv() (simulates peer close)."""
+
+    def recv(self, n: int) -> bytes:
+        return b""  # peer closed
+
+
+def test_peer_close_raises_bridge_error() -> None:
+    """_readline must raise BridgeError when the peer closes the connection."""
+    sock = _ClosingSocket()
+    bridge = FGTelnetBridge(socket_factory=_factory_returning(sock))
+    bridge.connect(_sleep=_noop)
+
+    with pytest.raises(BridgeError, match="closed"):
+        bridge.get("/any/prop")

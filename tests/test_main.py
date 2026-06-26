@@ -13,6 +13,7 @@ from sidecar.gemini_client import OfflineError
 from sidecar.main import (
     AIRCRAFT_ID,
     AIRPORT_ID,
+    HEARTBEAT,
     POS_LAT,
     POS_LON,
     REQ_CALLSIGN,
@@ -21,6 +22,7 @@ from sidecar.main import (
     REQ_TYPE,
     RESP_READY,
     RESP_TEXT,
+    SIDECAR_MODE,
     STATUS,
     Sidecar,
 )
@@ -316,3 +318,164 @@ def test_build_clearance_no_aircraft_id_gives_empty_string(tmp_path: Path) -> No
     sidecar, _, _ = _make_with_picture(tmp_path, props, pic)
     clearance = sidecar._build_clearance("taxi", "N2", pic)
     assert clearance.aircraft_type == ""
+
+
+# ---------------------------------------------------------------------------
+# Stage 0: exception-path recovery (Task 4a)
+# ---------------------------------------------------------------------------
+
+
+class _BrokenClient:
+    """A client that always raises RuntimeError to trigger the exception path."""
+
+    def generate(self, *args: Any, **kwargs: Any) -> Any:
+        raise RuntimeError("forced failure for test")
+
+
+def test_handle_trigger_exception_path_writes_error_reply(tmp_path: Path) -> None:
+    """When handle_trigger() raises, it must write a user-facing error reply
+    and reset STATUS to idle (not leave it stuck on 'processing' or 'error')."""
+    props = {
+        AIRPORT_ID: "KSFO",
+        REQ_TYPE: "taxi",
+        REQ_CALLSIGN: "UAL1",
+        REQ_RUNWAY: "",
+        POS_LAT: "37.62",
+        POS_LON: "-122.38",
+        REQ_TRIGGER: "1",
+    }
+    bridge = _FakeBridge(props)
+    cache = PictureCache(tmp_path / "cache.sqlite")
+    backend = _RecordingBackend()
+    tts = TTS(backend=backend)
+
+    # Loader that returns something to trigger the AI path (which will fail).
+    def loader(icao: str) -> str | None:
+        return _FIXTURE.read_text() if icao == "KSFO" else None
+
+    sidecar = Sidecar(
+        _settings(), bridge, _BrokenClient(), cache, tts, groundnet_loader=loader
+    )
+    sidecar.handle_trigger()
+
+    # Must have written a user-facing error message.
+    assert bridge.props.get(RESP_TEXT, "") != ""
+    assert "Stand by" in bridge.props[RESP_TEXT]
+    # Must have set RESP_READY so the UI unblocks.
+    assert bridge.props[RESP_READY] == 1
+    # Must have reset STATUS to idle (not left as "error").
+    assert bridge.props[STATUS] == "idle"
+    # Must have reset the trigger.
+    assert bridge.props[REQ_TRIGGER] == 0
+
+
+# ---------------------------------------------------------------------------
+# Stage 0: heartbeat write in poll_loop (Task 2)
+# ---------------------------------------------------------------------------
+
+
+def test_poll_loop_writes_heartbeat(tmp_path: Path) -> None:
+    """poll_loop must increment /ai-atc/sidecar/heartbeat on each heartbeat tick."""
+    props = {
+        AIRPORT_ID: "KSFO",
+        REQ_TRIGGER: "0",
+    }
+    sidecar, bridge, _ = _make(tmp_path, props)
+
+    # Run enough iterations so at least one heartbeat fires (heartbeat_interval=0.0).
+    sidecar.poll_loop(
+        max_iterations=3,
+        _sleep=lambda *_: None,
+        heartbeat_interval=0.0,
+    )
+
+    assert bridge.props.get(HEARTBEAT, 0) > 0
+    assert bridge.props.get(SIDECAR_MODE) in ("ai", "offline")
+
+
+# ---------------------------------------------------------------------------
+# Arrival req_types: approach, ils, airfield_in_sight, radio_check
+# ---------------------------------------------------------------------------
+
+
+import pytest
+
+
+@pytest.mark.parametrize("req_type", ["approach", "ils", "airfield_in_sight", "radio_check"])
+def test_handle_trigger_arrival_types_write_response(tmp_path: Path, req_type: str) -> None:
+    """handle_trigger routes each new arrival req_type through phraseology and writes a response."""
+    props = {
+        AIRPORT_ID: "KSFO",
+        REQ_TYPE: req_type,
+        REQ_CALLSIGN: "UAL1",
+        REQ_RUNWAY: "28R",
+        POS_LAT: "37.62",
+        POS_LON: "-122.38",
+        REQ_TRIGGER: "1",
+    }
+    sidecar, bridge, backend = _make(tmp_path, props)
+    sidecar.handle_trigger()
+
+    assert bridge.props[RESP_READY] == 1
+    assert bridge.props[STATUS] == "idle"
+    assert bridge.props[REQ_TRIGGER] == 0
+    resp = bridge.props[RESP_TEXT]
+    assert resp.strip(), f"Expected non-empty response for req_type={req_type!r}"
+    assert "UAL1" in resp, f"Callsign missing from response for req_type={req_type!r}"
+
+
+def test_build_clearance_arrival_types_set_clearance_type(tmp_path: Path) -> None:
+    """_build_clearance sets clearance_type correctly for each arrival req_type."""
+    pic = _synthetic_picture()
+    for req_type in ("approach", "ils", "airfield_in_sight", "radio_check"):
+        props = {
+            AIRPORT_ID: pic.icao,
+            REQ_TYPE: req_type,
+            REQ_CALLSIGN: "UAL1",
+            REQ_RUNWAY: "28L",
+            POS_LAT: "37.620",
+            POS_LON: "-122.380",
+        }
+        sidecar, _, _ = _make_with_picture(tmp_path, props, pic)
+        clearance = sidecar._build_clearance(req_type, "UAL1", pic)
+        assert clearance.clearance_type == req_type, f"clearance_type mismatch for {req_type!r}"
+        assert clearance.callsign == "UAL1"
+
+
+def test_build_clearance_arrival_remarks_with_threshold_data(tmp_path: Path) -> None:
+    """When runway threshold coords are non-zero, distance/bearing goes into remarks."""
+    from sidecar.airport_picture import Frequencies
+
+    pic = _synthetic_picture()
+    # Give the runway real threshold coordinates (non-zero triggers computation)
+    rwy_with_thr = pic.runways[0].model_copy(update={"thr_lat": 37.625, "thr_lon": -122.385})
+    pic_with_thr = pic.model_copy(update={"runways": [rwy_with_thr]})
+
+    props = {
+        AIRPORT_ID: pic_with_thr.icao,
+        REQ_TYPE: "approach",
+        REQ_CALLSIGN: "N1",
+        REQ_RUNWAY: "28L",
+        POS_LAT: "37.620",
+        POS_LON: "-122.380",
+    }
+    sidecar, _, _ = _make_with_picture(tmp_path, props, pic_with_thr)
+    clearance = sidecar._build_clearance("approach", "N1", pic_with_thr)
+    assert clearance.remarks, "remarks should be non-empty when threshold coords are available"
+    assert "nm" in clearance.remarks
+
+
+def test_build_clearance_radio_check_no_remarks(tmp_path: Path) -> None:
+    """radio_check never computes distance/bearing; remarks stays empty."""
+    pic = _synthetic_picture()
+    props = {
+        AIRPORT_ID: pic.icao,
+        REQ_TYPE: "radio_check",
+        REQ_CALLSIGN: "N1",
+        REQ_RUNWAY: "",
+        POS_LAT: "37.620",
+        POS_LON: "-122.380",
+    }
+    sidecar, _, _ = _make_with_picture(tmp_path, props, pic)
+    clearance = sidecar._build_clearance("radio_check", "N1", pic)
+    assert clearance.remarks == ""

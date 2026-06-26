@@ -2,6 +2,11 @@
 
 from __future__ import annotations
 
+import shutil
+import sqlite3
+from pathlib import Path
+
+import sidecar.cache as cache_mod
 from sidecar.airport_picture import AirportPicture, Frequencies, Node, Segment
 from sidecar.cache import PictureCache
 
@@ -72,3 +77,58 @@ def test_context_manager_closes(tmp_path) -> None:
     with PictureCache(tmp_path / "airports.sqlite") as cache:
         cache.put(_picture())
         assert cache.get("KSFO", "hash-aaa") is not None
+
+
+def test_absolute_db_path_passes_through_unchanged(tmp_path) -> None:
+    # tmp_path is absolute — it must NOT be re-anchored to the repo root.
+    target = tmp_path / "airports.sqlite"
+    cache = PictureCache(target)
+    assert cache.db_path == target
+    assert cache.db_path.is_absolute()
+    cache.close()
+
+
+def test_relative_db_path_resolves_under_repo_root(tmp_path) -> None:
+    # tmp_path is unused here on purpose: a relative path is, by definition,
+    # not under tmp_path — it must anchor to the repo root regardless of cwd.
+    repo_root = Path(cache_mod.__file__).resolve().parents[1]
+    rel = Path("fixtures") / "cache" / "_reltest_cwd_independent" / "airports.sqlite"
+    cleanup_dir = repo_root / "fixtures" / "cache" / "_reltest_cwd_independent"
+    try:
+        cache = PictureCache(rel)
+        assert cache.db_path.is_absolute()
+        assert cache.db_path == repo_root / rel
+        assert repo_root in cache.db_path.parents
+        assert cache.db_path.exists()
+        cache.close()
+    finally:
+        if cleanup_dir.exists():
+            shutil.rmtree(cleanup_dir)
+
+
+class _BoomConn:
+    """A fake connection whose every execute raises OperationalError."""
+
+    def execute(self, *args: object, **kwargs: object):
+        raise sqlite3.OperationalError("database is locked")
+
+    def commit(self) -> None:  # pragma: no cover - not reached on get()
+        pass
+
+    def close(self) -> None:
+        pass
+
+
+def test_get_returns_none_on_operational_error(tmp_path) -> None:
+    cache = PictureCache(tmp_path / "airports.sqlite")
+    cache.put(_picture())  # real data present, so a None means the error degraded gracefully
+    cache._conn = _BoomConn()
+    assert cache.get("KSFO", "hash-aaa") is None
+
+
+def test_put_and_invalidate_swallow_operational_error(tmp_path) -> None:
+    cache = PictureCache(tmp_path / "airports.sqlite")
+    cache._conn = _BoomConn()
+    # Neither call should raise despite the underlying OperationalError.
+    cache.put(_picture())
+    cache.invalidate("KSFO")

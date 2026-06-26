@@ -97,6 +97,21 @@ class GeminiClient:
         # OSError already covers socket.error and ConnectionError as subclasses.
         return isinstance(exc, (OSError, TimeoutError))
 
+    @staticmethod
+    def _is_client_error(exc: Exception) -> bool:
+        """Return True for any google.genai ClientError (4xx response).
+
+        Used to catch non-offline client errors (e.g. 400 malformed schema,
+        404 bad model) that are neither retryable nor in the offline set, so
+        they can be degraded to OfflineError instead of leaking out raw.
+        """
+        try:
+            from google.genai import errors  # noqa: PLC0415
+
+            return isinstance(exc, errors.ClientError)
+        except ImportError:
+            return False
+
     # ------------------------------------------------------------------
     # Public API
     # ------------------------------------------------------------------
@@ -162,7 +177,16 @@ class GeminiClient:
                     raise OfflineError(
                         f"Gemini unavailable: {type(exc).__name__}: {exc}"
                     ) from exc
-                raise  # unexpected — re-raise as-is
+                if self._is_client_error(exc):
+                    # Non-offline, non-retryable 4xx (e.g. 400 malformed schema,
+                    # 404 bad model). Degrade to OfflineError so callers fall back
+                    # to the deterministic offline template instead of crashing on
+                    # a raw provider error. Original preserved as __cause__.
+                    raise OfflineError(
+                        f"Gemini client error (non-retryable): "
+                        f"{type(exc).__name__}: {exc}"
+                    ) from exc
+                raise  # truly unexpected — re-raise as-is
 
         raise OfflineError(
             f"Gemini unreachable after {_DEFAULT_MAX_ATTEMPTS} attempts: "

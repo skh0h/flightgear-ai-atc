@@ -9,6 +9,9 @@
 #   /ai-atc/response/ready    (bool)   set to 1 by the sidecar when a response is available
 #   /ai-atc/status            (string) "idle" | "processing" | "error"
 #   /ai-atc/log               (string) accumulating transcript shown in the dialog
+#   /ai-atc/sidecar/heartbeat (int)    incremented every ~5 s by the sidecar
+#   /ai-atc/sidecar/mode      (string) "ai" | "offline" — set by the sidecar
+#   /ai-atc/backend           (string) human-readable backend status for the UI
 #
 # The Python sidecar polls /ai-atc/request/trigger over the FG telnet interface.
 # When triggered it reads context props, generates a clearance, writes
@@ -17,6 +20,11 @@
 
 var ROOT = "/ai-atc";
 var _listeners = [];
+
+# How many seconds without a heartbeat increment before we call the sidecar gone.
+var HEARTBEAT_STALE_SEC = 15;
+# Watchdog timeout: seconds after request() before we give up waiting for a reply.
+var WATCHDOG_SEC = 8;
 
 # Initialise the mailbox so the dialog and sidecar see well-formed defaults.
 var _set_defaults = func {
@@ -28,17 +36,67 @@ var _set_defaults = func {
     setprop(ROOT ~ "/response/ready", 0);
     setprop(ROOT ~ "/status", "idle");
     setprop(ROOT ~ "/log", "");
+    setprop(ROOT ~ "/sidecar/heartbeat", -1);
+    setprop(ROOT ~ "/sidecar/mode", "");
+    setprop(ROOT ~ "/backend", "Not running — launch run-mac.command");
+    setprop(ROOT ~ "/airport/icao", "");
+    setprop(ROOT ~ "/airport/name", "");
 };
 
 # Append one line to the scrolling transcript.
+var LOG_MAX_LINES = 200;
 var append_log = func(line) {
     if (line == nil or line == "") return;
     var existing = getprop(ROOT ~ "/log");
     if (existing == nil) existing = "";
-    setprop(ROOT ~ "/log", existing ~ line ~ "\n");
+    var combined = existing ~ line ~ "\n";
+    # Cap the transcript so the property cannot grow unbounded over a long
+    # session: keep only the last LOG_MAX_LINES lines. The trailing "\n" makes
+    # split() yield a final empty element, so re-join with "\n" as a separator
+    # (rather than appending "\n" to each) to preserve a single trailing newline.
+    var lines = split("\n", combined);
+    if (size(lines) > LOG_MAX_LINES) {
+        lines = subvec(lines, size(lines) - LOG_MAX_LINES);
+        combined = "";
+        var first = 1;
+        foreach (var l; lines) {
+            if (first) { combined = l; first = 0; }
+            else { combined = combined ~ "\n" ~ l; }
+        }
+    }
+    setprop(ROOT ~ "/log", combined);
 };
 
-# Fire a request to the sidecar. Called from the menu and dialog bindings.
+# ---------------------------------------------------------------------------
+# Watchdog: started when request() fires, cancelled when a reply arrives.
+# ---------------------------------------------------------------------------
+var _watchdog_timer = nil;
+
+var _cancel_watchdog = func {
+    if (_watchdog_timer != nil) {
+        _watchdog_timer.stop();
+        _watchdog_timer = nil;
+    }
+};
+
+var _start_watchdog = func {
+    _cancel_watchdog();
+    _watchdog_timer = maketimer(WATCHDOG_SEC, func {
+        _watchdog_timer = nil;
+        var st = getprop(ROOT ~ "/status");
+        if (st == "processing") {
+            setprop(ROOT ~ "/status", "idle");
+            print("[atc] No response from backend — is the sidecar running?");
+            append_log("[atc] No response from backend — is the sidecar running?");
+        }
+    });
+    _watchdog_timer.singleShot = 1;
+    _watchdog_timer.start();
+};
+
+# ---------------------------------------------------------------------------
+# Fire a request to the sidecar. Called from the menu, dialog, and keybinding.
+# ---------------------------------------------------------------------------
 var request = func(req_type) {
     var callsign = getprop(ROOT ~ "/request/callsign");
     if (callsign == nil or callsign == "") {
@@ -51,6 +109,7 @@ var request = func(req_type) {
     setprop(ROOT ~ "/status", "processing");
     setprop(ROOT ~ "/request/trigger", 1);
     append_log("[you] request " ~ req_type ~ " (" ~ callsign ~ ")");
+    _start_watchdog();
 };
 
 # Publish runway + frequency data from airportinfo() into the /ai-atc/airport/
@@ -58,42 +117,102 @@ var request = func(req_type) {
 var publish_airport_data = func(icao) {
     if (icao == nil or icao == "") return;
     var info = airportinfo(icao);
-    if (info == nil) return;
+    if (info == nil) {
+        print("[AI ATC] airportinfo returned nil for " ~ icao ~ "; skipping airport data publish");
+        return;
+    }
 
-    # Frequencies
-    var freqs = ["ground", "tower", "atis", "approach", "departure"];
-    foreach (var fname; freqs) {
-        var f = info.comms(fname);
-        if (f != nil and size(f) > 0) {
-            setprop(ROOT ~ "/airport/freq/" ~ fname, sprintf("%.2f", f[0].frequency / 1000.0));
+    # Airport identity for the dialog header.
+    setprop(ROOT ~ "/airport/icao", info.id);
+    setprop(ROOT ~ "/airport/name", info.name);
+
+    # Frequencies — comms() may not be available for all airports; guard each call.
+    var freq_types = ["ground", "tower", "atis", "approach", "departure"];
+    var _err = [];
+    foreach (var fname; freq_types) {
+        var f = nil;
+        _err = [];
+        call(func { f = info.comms(fname); }, nil, _err);
+        if (size(_err) == 0 and f != nil and size(f) > 0) {
+            _err = [];
+            var hz = nil;
+            call(func { hz = f[0].frequency; }, nil, _err);
+            if (size(_err) == 0 and hz != nil)
+                setprop(ROOT ~ "/airport/freq/" ~ fname, sprintf("%.2f", hz / 1000.0));
         }
     }
 
-    # Runways
-    var rwy_list = info.runways;
+    # Runways — clear stale entries first
+    var old_count = getprop(ROOT ~ "/airport/runway_count");
+    if (old_count == nil) old_count = 0;
+    var i = 0;
+    while (i < old_count) {
+        var pfx = ROOT ~ "/airport/runway[" ~ i ~ "]";
+        setprop(pfx ~ "/id", "");
+        i += 1;
+    }
+
+    var rwy_list = nil;
+    _err = [];
+    call(func { rwy_list = info.runways; }, nil, _err);
     if (rwy_list == nil) return;
     var n = 0;
-    foreach (var rwy; keys(rwy_list)) {
-        var r = rwy_list[rwy];
+    # Sort the runway keys so runway[N] indices are stable across reloads and
+    # airport changes; keys() order is otherwise non-deterministic.
+    var rwy_keys = sort(keys(rwy_list), func(a, b) { cmp(a, b); });
+    foreach (var rwy_key; rwy_keys) {
+        var r = rwy_list[rwy_key];
+        if (r == nil) continue;
         var pfx = ROOT ~ "/airport/runway[" ~ n ~ "]";
-        setprop(pfx ~ "/id",      r.id);
-        setprop(pfx ~ "/heading", r.heading);
-        setprop(pfx ~ "/thr_lat", r.lat);
-        setprop(pfx ~ "/thr_lon", r.lon);
-        setprop(pfx ~ "/length",  r.length);
-        var ils = r.ils;
-        if (ils != nil) {
-            setprop(pfx ~ "/ils_freq", sprintf("%.2f", ils.frequency / 1000.0));
-        } else {
-            setprop(pfx ~ "/ils_freq", "");
-        }
-        n += 1;
+        _err = [];
+        call(func {
+            setprop(pfx ~ "/id",      r.id);
+            setprop(pfx ~ "/heading", r.heading);
+            setprop(pfx ~ "/thr_lat", r.lat);
+            setprop(pfx ~ "/thr_lon", r.lon);
+            setprop(pfx ~ "/length",  r.length);
+            var ils = r.ils;
+            if (ils != nil) {
+                setprop(pfx ~ "/ils_freq", sprintf("%.2f", ils.frequency / 1000.0));
+            } else {
+                setprop(pfx ~ "/ils_freq", "");
+            }
+        }, nil, _err);
+        if (size(_err) == 0) n += 1;
     }
     setprop(ROOT ~ "/airport/runway_count", n);
 };
 
+# ---------------------------------------------------------------------------
+# Backend heartbeat watcher — updates /ai-atc/backend status string.
+# ---------------------------------------------------------------------------
+var _last_heartbeat = -2;  # sentinel: -2 = never seen, -1 = FG default
+var _heartbeat_timer = nil;
+
+var _update_backend_status = func {
+    var hb = getprop(ROOT ~ "/sidecar/heartbeat");
+    var mode = getprop(ROOT ~ "/sidecar/mode");
+    if (hb == nil) hb = -1;
+    if (mode == nil) mode = "";
+
+    if (hb == _last_heartbeat or hb < 0) {
+        # Heartbeat not advancing (or never set by sidecar) — backend is gone.
+        setprop(ROOT ~ "/backend", "Not running — launch run-mac.command");
+    } elsif (mode == "ai") {
+        setprop(ROOT ~ "/backend", "Connected (AI)");
+    } else {
+        setprop(ROOT ~ "/backend", "Connected (offline templates)");
+    }
+    _last_heartbeat = hb;
+};
+
 var main = func(addon) {
     _set_defaults();
+
+    # Expose request() in the global namespace so dialog <command>nasal</command>
+    # bindings (which run in the global scope, not the add-on scope) can reach it
+    # via the short name  aiatc.request("pushback")  etc.
+    globals.aiatc = { request: request };
 
     # Surface each new clearance in the transcript as the sidecar writes it.
     append(_listeners, setlistener(ROOT ~ "/response/text", func(n) {
@@ -101,20 +220,65 @@ var main = func(addon) {
         if (text != nil and text != "") append_log("[atc] " ~ text);
     }, 0, 0));
 
-    # Clear the processing flag once a response is ready.
+    # Cancel watchdog and clear processing flag once a response is ready.
     append(_listeners, setlistener(ROOT ~ "/response/ready", func(n) {
-        if (n.getBoolValue()) setprop(ROOT ~ "/status", "idle");
+        if (n.getBoolValue()) {
+            _cancel_watchdog();
+            setprop(ROOT ~ "/status", "idle");
+        }
     }, 0, 0));
 
-    # Publish airport data for the current airport at startup
+    # Surface error status in log and reset to idle.
+    append(_listeners, setlistener(ROOT ~ "/status", func(n) {
+        if (n.getValue() == "error") {
+            print("[atc] Backend reported an error; resetting to idle.");
+            append_log("[atc] Backend reported an error.");
+            _cancel_watchdog();
+            setprop(ROOT ~ "/status", "idle");
+        }
+    }, 0, 0));
+
+    # Re-publish airport data when the user changes airport.
+    append(_listeners, setlistener("/sim/presets/airport-id", func(n) {
+        var icao = n.getValue();
+        if (icao != nil and icao != "") {
+            publish_airport_data(icao);
+        }
+    }, 0, 0));
+
+    # Heartbeat polling timer: check every HEARTBEAT_STALE_SEC seconds.
+    _heartbeat_timer = maketimer(HEARTBEAT_STALE_SEC, _update_backend_status);
+    _heartbeat_timer.start();
+
+    # Publish airport data for the current airport at startup.
     var icao = getprop("/sim/presets/airport-id");
     publish_airport_data(icao);
 
-    print("[AI ATC] addon loaded, version " ~ addon.version);
+    # Initial backend status check.
+    _update_backend_status();
+
+    # addon.version is an FG Version ghost; concatenating it directly prints
+    # garbage. Stringify defensively so this never throws if .str() is absent.
+    var verstr = "?";
+    if (addon != nil and addon.version != nil) {
+        if (typeof(addon.version) == "scalar") {
+            verstr = addon.version;
+        } else {
+            var _verr = [];
+            call(func { verstr = addon.version.str(); }, nil, nil, nil, _verr);
+            if (size(_verr) != 0) verstr = "?";
+        }
+    }
+    print("[AI ATC] addon loaded, version " ~ verstr);
 };
 
 var unload = func(addon) {
     foreach (var l; _listeners) removelistener(l);
     _listeners = [];
+    _cancel_watchdog();
+    if (_heartbeat_timer != nil) {
+        _heartbeat_timer.stop();
+        _heartbeat_timer = nil;
+    }
     print("[AI ATC] addon unloaded");
 };

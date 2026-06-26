@@ -1,8 +1,13 @@
 <?xml version="1.0" encoding="UTF-8"?>
-<!-- Adds an "AI ATC" menu to the FlightGear menu bar. Request items set the
-     /ai-atc/request mailbox props and raise the trigger; the Python sidecar
-     polls the trigger, responds, and resets it. -->
+<!-- Adds an "AI ATC" menu to the FlightGear menu bar. The panel contains
+     all request buttons; menu items beyond Open ATC Panel have been removed. -->
 <PropertyList>
+  <meta>
+    <file-type type="string">FlightGear add-on menu bar items</file-type>
+    <format-version type="int">1</format-version>
+  </meta>
+
+  <menubar-items>
   <menu>
     <label>AI ATC</label>
     <enabled type="bool">true</enabled>
@@ -15,54 +20,6 @@
       </binding>
     </item>
 
-    <item>
-      <label>Request Pushback</label>
-      <binding>
-        <command>nasal</command>
-        <script>
-          setprop("/ai-atc/request/type", "pushback");
-          setprop("/ai-atc/response/ready", 0);
-          setprop("/ai-atc/status", "processing");
-          setprop("/ai-atc/request/trigger", 1);
-        </script>
-      </binding>
-    </item>
-
-    <item>
-      <label>Request Taxi Clearance</label>
-      <binding>
-        <command>nasal</command>
-        <script>
-          setprop("/ai-atc/request/type", "taxi");
-          setprop("/ai-atc/response/ready", 0);
-          setprop("/ai-atc/status", "processing");
-          setprop("/ai-atc/request/trigger", 1);
-        </script>
-      </binding>
-    </item>
-
-    <item>
-      <label>Request Takeoff Clearance</label>
-      <binding>
-        <command>nasal</command>
-        <script>
-          setprop("/ai-atc/request/type", "takeoff");
-          setprop("/ai-atc/response/ready", 0);
-          setprop("/ai-atc/status", "processing");
-          setprop("/ai-atc/request/trigger", 1);
-        </script>
-      </binding>
-    </item>
-
-    <item>
-      <label>Cancel Request</label>
-      <binding>
-        <command>nasal</command>
-        <script>
-          setprop("/ai-atc/request/type", "cancel");
-          setprop("/ai-atc/request/trigger", 1);
-        </script>
-      </binding>
-    </item>
   </menu>
+  </menubar-items>
 </PropertyList>
