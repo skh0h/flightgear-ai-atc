@@ -26,7 +26,7 @@ import sys
 import time
 from collections.abc import Callable
 
-from sidecar import metar, parser_ai, personality, phraseology, routing
+from sidecar import metar, parser_ai, personality, phraseology, routing, traffic
 from sidecar.airport_picture import (
     AirportPicture,
     Frequencies,
@@ -92,6 +92,8 @@ AI_MODELS_PREFIX = "/ai/models/aircraft"  # + "[N]/field"
 # Sidecar writes these for the panel to display (Mode B contract):
 TRAFFIC_COUNT = "/ai-atc/traffic/count"
 TRAFFIC_SUMMARY = "/ai-atc/traffic/summary"
+# Phase 6: living-world ambient background chatter (sidecar writes one line).
+CHATTER = "/ai-atc/chatter"
 
 
 def _is_true(value: str) -> bool:
@@ -714,6 +716,31 @@ class Sidecar:
                 clearance = self._build_clearance(req_type, callsign, picture)
                 self._apply_mode_nuance(clearance, mode)
                 aircraft_type = clearance.aircraft_type
+                # Phase 6: best-effort wake-turbulence caution for departures and
+                # arrivals — append separation advice for the nearest preceding
+                # heavier traffic.  Never breaks the clearance reply.
+                if picture is not None and req_type in ("takeoff", "approach", "ils"):
+                    try:
+                        dep_snaps = read_ai_traffic(self.bridge, picture)
+                        lead_cs = ""
+                        lead_d = math.inf
+                        for s in dep_snaps:
+                            if traffic.wake_category(s.callsign) in ("heavy", "super"):
+                                d = _haversine_nm(lat, lon, s.lat, s.lon)
+                                if d < lead_d:
+                                    lead_d, lead_cs = d, s.callsign
+                        if lead_cs:
+                            advice = traffic.separation_advice(
+                                lead_cs, clearance.aircraft_type
+                            )
+                            if advice:
+                                clearance.remarks = (
+                                    f"{clearance.remarks} {advice}".strip()
+                                    if clearance.remarks
+                                    else advice
+                                )
+                    except Exception:
+                        _log.debug("wake separation advice failed", exc_info=True)
                 # Remember the issued clearance so a later readback can be graded.
                 self._last_clearance = clearance
                 text = phraseology.phrase_online(
@@ -737,6 +764,12 @@ class Sidecar:
                         )
                         self.bridge.set(TRAFFIC_COUNT, count)
                         self.bridge.set(TRAFFIC_SUMMARY, summary)
+                        # Phase 6: publish one deterministic ambient chatter line.
+                        chatter = traffic.ambient_chatter(
+                            snapshots, picture, seed=f"{icao}-{self.memory.count}"
+                        )
+                        if chatter:
+                            self.bridge.set(CHATTER, chatter[0])
                     except Exception:
                         _log.debug("traffic sequencing failed", exc_info=True)
         except Exception:

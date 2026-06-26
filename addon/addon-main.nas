@@ -2,8 +2,10 @@
 #
 # /ai-atc/ property mailbox:
 #   /ai-atc/request/type      (string) request token, e.g.:
-#                               departure: "pushback" | "taxi" | "takeoff" | "cancel"
-#                               arrival:   "approach" | "ils" | "airfield_in_sight" | "radio_check"
+#                               departure: "pushback" | "taxi" | "takeoff" |
+#                                          "intersection_departure" | "cancel"
+#                               arrival:   "approach" | "ils" | "airfield_in_sight" |
+#                                          "lahso" | "radio_check"
 #                               emergency: "mayday" | "pan_pan" | "gear_emergency" |
 #                                          "min_fuel" | "diversion" | "go_around" |
 #                                          "squawk_7500" | "squawk_7600" | "squawk_7700"
@@ -29,6 +31,8 @@
 #                               the sidecar's quiet-night ("reflective" mood) easter egg
 #   /ai-atc/controller/name   (string) current controller persona name, published by the
 #                               sidecar; shown live in the dialog header
+#   /ai-atc/chatter           (string) one ambient-chatter line published by the sidecar;
+#                               shown live in the dialog ("Chatter: %s")
 #
 # The Python sidecar polls /ai-atc/request/trigger over the FG telnet interface.
 # When triggered it reads context props, generates a clearance, writes
@@ -76,6 +80,9 @@ var _set_defaults = func {
     # before the sidecar writes the first sequencing summary.
     setprop(ROOT ~ "/traffic/summary", "");
     setprop(ROOT ~ "/traffic/count", 0);
+    # Ambient-chatter line published by the sidecar; seeded blank so the dialog's
+    # live "Chatter: %s" binding renders before the first chatter line arrives.
+    setprop(ROOT ~ "/chatter", "");
 };
 
 # Append one line to the scrolling transcript.

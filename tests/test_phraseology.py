@@ -515,3 +515,98 @@ def test_phrase_offline_relief_handoff_includes_remarks() -> None:
     out = phrase_offline(c)
     assert out.startswith("Position, position relief in progress")
     assert "This is Dana Whitfield taking over the position." in out
+
+
+# ---------------------------------------------------------------------------
+# Phase 6: LAHSO + intersection departures
+# ---------------------------------------------------------------------------
+
+
+def test_phrase_offline_lahso_with_hold_short_exact() -> None:
+    c = Clearance(
+        callsign="UAL1",
+        clearance_type="lahso",
+        active_runway="28L",
+        hold_short="01",
+    )
+    assert (
+        phrase_offline(c)
+        == "UAL1, cleared to land runway 28L, hold short of runway 01."
+    )
+
+
+def test_phrase_offline_lahso_without_hold_short_generic() -> None:
+    c = Clearance(callsign="UAL1", clearance_type="lahso", active_runway="28L")
+    assert (
+        phrase_offline(c)
+        == "UAL1, cleared to land runway 28L, hold short of the intersecting runway."
+    )
+
+
+def test_phrase_offline_intersection_departure_exact() -> None:
+    c = Clearance(
+        callsign="UAL1", clearance_type="intersection_departure", active_runway="28L"
+    )
+    assert (
+        phrase_offline(c)
+        == "UAL1, runway 28L at the intersection, cleared for takeoff."
+    )
+
+
+def test_append_wake_caution_adds_remark_when_lead_heavier() -> None:
+    from sidecar.phraseology import append_wake_caution
+
+    c = Clearance(callsign="UAL1", clearance_type="takeoff", aircraft_type="C172")
+    append_wake_caution(c, "B744")
+    assert "wake" in c.remarks.lower()
+
+
+def test_append_wake_caution_noop_when_lead_not_heavier() -> None:
+    from sidecar.phraseology import append_wake_caution
+
+    c = Clearance(callsign="UAL1", clearance_type="takeoff", aircraft_type="B744")
+    append_wake_caution(c, "C172")
+    assert c.remarks == ""
+
+
+# ---------------------------------------------------------------------------
+# Phase 6: LAHSO + intersection departures — online return + offline fallback
+# ---------------------------------------------------------------------------
+
+
+def test_phrase_online_returns_model_text_for_lahso() -> None:
+    client = _FakeClient(
+        response=PhraseResult(text="United 1, cleared to land 28 left, hold short of runway 1.")
+    )
+    c = Clearance(
+        callsign="UAL1", clearance_type="lahso", active_runway="28L", hold_short="01"
+    )
+    assert (
+        phrase_online(c, client)  # type: ignore[arg-type]
+        == "United 1, cleared to land 28 left, hold short of runway 1."
+    )
+    assert client.calls == 1
+
+
+def test_phrase_online_falls_back_for_lahso_on_offline_error() -> None:
+    client = _FakeClient(raise_offline=True)
+    c = Clearance(
+        callsign="UAL1", clearance_type="lahso", active_runway="28L", hold_short="01"
+    )
+    assert phrase_online(c, client) == phrase_offline(c)  # type: ignore[arg-type]
+
+
+def test_phrase_online_falls_back_for_intersection_departure_on_offline_error() -> None:
+    client = _FakeClient(raise_offline=True)
+    c = Clearance(
+        callsign="UAL1", clearance_type="intersection_departure", active_runway="28L"
+    )
+    assert phrase_online(c, client) == phrase_offline(c)  # type: ignore[arg-type]
+
+
+def test_build_prompt_includes_type_guidance_for_lahso() -> None:
+    from sidecar.phraseology import _TYPE_GUIDANCE, _build_prompt
+
+    c = Clearance(callsign="UAL1", clearance_type="lahso", active_runway="28L")
+    prompt = _build_prompt(c)
+    assert _TYPE_GUIDANCE["lahso"] in prompt

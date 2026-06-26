@@ -125,6 +125,25 @@ def phrase_offline(clearance: Clearance) -> str:
             f"{callsign}, position relief in progress, "
             f"controller change on the frequency."
         )
+    elif ctype == "lahso":
+        runway = _safe_rwy(clearance.active_runway) or "the active runway"
+        hold = _safe_rwy(clearance.hold_short)
+        if hold:
+            sentence = (
+                f"{callsign}, cleared to land runway {runway}, "
+                f"hold short of runway {hold}."
+            )
+        else:
+            sentence = (
+                f"{callsign}, cleared to land runway {runway}, "
+                f"hold short of the intersecting runway."
+            )
+    elif ctype == "intersection_departure":
+        runway = _safe_rwy(clearance.active_runway) or "the active runway"
+        sentence = (
+            f"{callsign}, runway {runway} at the intersection, "
+            f"cleared for takeoff."
+        )
     else:  # taxi (default)
         parts = [f"{callsign}, taxi"]
         if _safe_rwy(clearance.active_runway):
@@ -204,7 +223,27 @@ _TYPE_GUIDANCE = {
     "squawk_7600": "For a 7600 radio-failure squawk, acknowledge lost communications, confirm the code, and tell the pilot to continue and watch for light-gun signals.",
     "squawk_7700": "For a 7700 general-emergency squawk, acknowledge the emergency and ask the pilot to state the nature of the emergency and intentions.",
     "relief_handoff": "For a position relief, briefly introduce the relieving controller and summarise recent activity for continuity.",
+    "lahso": "For land-and-hold-short operations, clear the aircraft to land and instruct it to hold short of the intersecting runway.",
+    "intersection_departure": "For an intersection departure, state the departure runway and the intersection and issue the takeoff clearance.",
 }
+
+
+def append_wake_caution(clearance: Clearance, lead_type: str) -> None:
+    """Best-effort: append a wake-turbulence caution to a clearance's remarks.
+
+    Uses :func:`sidecar.traffic.separation_advice` to decide whether a caution
+    is warranted for ``lead_type`` ahead of this clearance's own aircraft type;
+    a no-op when no extra wake spacing applies.  Imported locally to keep the
+    phraseology<->traffic dependency one-directional.
+    """
+    from sidecar.traffic import separation_advice  # noqa: PLC0415
+
+    advice = separation_advice(lead_type, clearance.aircraft_type)
+    if not advice:
+        return
+    clearance.remarks = (
+        f"{clearance.remarks} {advice}".strip() if clearance.remarks else advice
+    )
 
 
 def _persona_context_block(
