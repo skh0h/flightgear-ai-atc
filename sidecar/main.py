@@ -27,7 +27,12 @@ import time
 from collections.abc import Callable
 
 from sidecar import metar, parser_ai, phraseology, routing
-from sidecar.airport_picture import AirportPicture, Frequencies, Runway
+from sidecar.airport_picture import (
+    AirportPicture,
+    Frequencies,
+    Runway,
+    TrafficSnapshot,
+)
 from sidecar.cache import PictureCache
 from sidecar.config import Settings, load
 from sidecar.fg_bridge import BridgeError, FGTelnetBridge
@@ -64,6 +69,12 @@ AP_FREQ_ATIS = "/ai-atc/airport/freq/atis"
 AP_FREQ_APPROACH = "/ai-atc/airport/freq/approach"
 AP_FREQ_DEPARTURE = "/ai-atc/airport/freq/departure"
 
+# --- Mode B: live AI traffic (sidecar reads /ai/models via telnet) ----------
+AI_MODELS_PREFIX = "/ai/models/aircraft"  # + "[N]/field"
+# Sidecar writes these for the panel to display (Mode B contract):
+TRAFFIC_COUNT = "/ai-atc/traffic/count"
+TRAFFIC_SUMMARY = "/ai-atc/traffic/summary"
+
 
 def _is_true(value: str) -> bool:
     return str(value).strip().lower() in ("1", "true", "yes")
@@ -74,6 +85,13 @@ def _to_float(value: str, default: float = 0.0) -> float:
         return float(str(value).strip())
     except (TypeError, ValueError):
         return default
+
+
+def _clean_fg_str(value: str) -> str:
+    """FG telnet serializes a bool-false property as the token 'false'.
+    For string-valued request fields that artifact must be treated as empty."""
+    s = (value or "").strip()
+    return "" if s.lower() in ("false", "true") else s
 
 
 def _haversine_nm(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
@@ -172,6 +190,8 @@ def merge_airport_mailbox(
         except ValueError:
             length = 0.0
         ils_freq = bridge.get(f"{prefix}/ils_freq") or None
+        # Mode A: active-runway flag (absent/blank -> inactive).
+        active = _is_true(bridge.get(f"{prefix}/active") or "")
         runways.append(Runway(
             id=rwy_id,
             heading=heading,
@@ -179,6 +199,7 @@ def merge_airport_mailbox(
             thr_lon=thr_lon,
             length=length,
             ils_freq=ils_freq,
+            active=active,
         ))
 
     def _freq(path: str) -> str | None:
@@ -194,6 +215,124 @@ def merge_airport_mailbox(
     )
 
     return picture.model_copy(update={"runways": runways, "frequencies": frequencies})
+
+
+# ---------------------------------------------------------------------------
+# Mode B: live AI traffic snapshotting + queue sequencing
+# ---------------------------------------------------------------------------
+
+def read_ai_traffic(
+    bridge: "FGTelnetBridge",
+    picture: AirportPicture,
+    *,
+    max_models: int = 64,
+    max_snap_m: float = 150.0,
+) -> list[TrafficSnapshot]:
+    """Index-probe FlightGear's ``/ai/models`` and snap each aircraft to the net.
+
+    Reads per aircraft ``i`` (like :func:`merge_airport_mailbox`):
+
+    - ``/ai/models/aircraft[i]/valid``
+    - ``/ai/models/aircraft[i]/callsign``
+    - ``/ai/models/aircraft[i]/position/latitude-deg``
+    - ``/ai/models/aircraft[i]/position/longitude-deg``
+    - ``/ai/models/aircraft[i]/orientation/true-heading-deg``
+
+    Each aircraft is snapped to the nearest taxi node
+    (:func:`routing.nearest_node_with_distance`).  Snaps beyond ``max_snap_m``
+    or sitting at the null island ``(0, 0)`` are dropped.  Probing stops at the
+    first blank/invalid entry.  Every ``bridge.get`` is best-effort guarded so a
+    flaky bridge never raises out of here.
+    """
+    def _get(path: str) -> str:
+        try:
+            return bridge.get(path) or ""
+        except Exception:  # bridge is best-effort; treat as blank
+            return ""
+
+    snapshots: list[TrafficSnapshot] = []
+    for i in range(max_models):
+        prefix = f"{AI_MODELS_PREFIX}[{i}]"
+        # Stop at the first invalid/blank entry (index-probe contract).
+        if not _is_true(_get(f"{prefix}/valid")):
+            break
+        lat = _to_float(_get(f"{prefix}/position/latitude-deg"))
+        lon = _to_float(_get(f"{prefix}/position/longitude-deg"))
+        # Drop null-island / unpositioned entries but keep probing.
+        if lat == 0.0 and lon == 0.0:
+            continue
+        callsign = _get(f"{prefix}/callsign").strip()
+        heading = _to_float(_get(f"{prefix}/orientation/true-heading-deg"))
+        node_index, snap_dist = routing.nearest_node_with_distance(picture, lat, lon)
+        if node_index is None or snap_dist > max_snap_m:
+            continue
+        snapshots.append(
+            TrafficSnapshot(
+                callsign=callsign,
+                lat=lat,
+                lon=lon,
+                heading=heading,
+                node_index=node_index,
+                snap_dist_m=snap_dist,
+            )
+        )
+    return snapshots
+
+
+def compute_traffic_queue(
+    snapshots: list[TrafficSnapshot],
+    user_node_index: int | None,
+    picture: AirportPicture,
+) -> tuple[int, str]:
+    """Sequence ground traffic + the user into a departure queue.
+
+    Deterministic rule: order every participant (the detected ground traffic
+    plus the user, identified by ``user_node_index``) by how close they are to
+    the nearest on-runway node — closer to the runway means lower queue number.
+    Ties break on ``(is_user, callsign)`` so the ordering is fully stable for
+    tests.  Returns ``(count, summary)`` where ``count`` is the number of ground
+    traffic considered and ``summary`` is the one-line panel string per the
+    Mode B contract.
+    """
+    count = len(snapshots)
+
+    def _dist_to_runway(lat: float, lon: float) -> float:
+        _idx, dist = routing.nearest_node_with_distance(
+            picture, lat, lon, require_on_runway=True
+        )
+        return dist
+
+    def _node_coord(idx: int | None) -> tuple[float, float] | None:
+        if idx is None:
+            return None
+        for node in picture.nodes:
+            if node.index == idx:
+                return (node.lat, node.lon)
+        return None
+
+    # (distance_to_runway, is_user_flag, label, is_user) — sort is deterministic.
+    participants: list[tuple[float, int, str, bool]] = []
+    for snap in snapshots:
+        label = snap.callsign or "traffic"
+        participants.append((_dist_to_runway(snap.lat, snap.lon), 0, label, False))
+
+    user_coord = _node_coord(user_node_index)
+    user_dist = _dist_to_runway(*user_coord) if user_coord is not None else math.inf
+    participants.append((user_dist, 1, "You", True))
+
+    participants.sort(key=lambda p: (p[0], p[1], p[2]))
+
+    user_pos = next(i for i, p in enumerate(participants) if p[3])
+    user_number = user_pos + 1
+    if user_pos == 0:
+        summary = f"Ground traffic: {count}. You are number 1 for departure."
+    else:
+        ahead_label = participants[user_pos - 1][2]
+        summary = (
+            f"Ground traffic: {count}. "
+            f"You are number {user_number}, behind {ahead_label}."
+        )
+    return count, summary
 
 
 class Sidecar:
@@ -252,7 +391,7 @@ class Sidecar:
     def _build_clearance(
         self, req_type: str, callsign: str, picture: AirportPicture | None
     ) -> Clearance:
-        active_runway = self.bridge.get(REQ_RUNWAY) or ""
+        active_runway = _clean_fg_str(self.bridge.get(REQ_RUNWAY))
         eff_callsign = callsign or "Aircraft"
         eff_type = req_type or "taxi"
         icao = (self.bridge.get(AIRPORT_ID) or "").strip()
@@ -361,7 +500,7 @@ class Sidecar:
 
     def handle_trigger(self) -> None:
         req_type = (self.bridge.get(REQ_TYPE) or "taxi").strip()
-        callsign = (self.bridge.get(REQ_CALLSIGN) or "Aircraft").strip()
+        callsign = _clean_fg_str(self.bridge.get(REQ_CALLSIGN)) or "Aircraft"
 
         if req_type == "cancel":
             self.bridge.set(STATUS, "idle")
@@ -384,6 +523,22 @@ class Sidecar:
                 picture = merge_airport_mailbox(picture, self.bridge)
             clearance = self._build_clearance(req_type, callsign, picture)
             text = phraseology.phrase_online(clearance, self.client)
+            # Mode B: best-effort live traffic sequencing for taxi requests.
+            # Wrapped so any traffic failure NEVER breaks the clearance response.
+            if picture is not None and req_type == "taxi":
+                try:
+                    from sidecar.runway_selection import (  # noqa: PLC0415
+                        start_node_for_position,
+                    )
+                    user_node = start_node_for_position(picture, lat, lon)
+                    snapshots = read_ai_traffic(self.bridge, picture)
+                    count, summary = compute_traffic_queue(
+                        snapshots, user_node, picture
+                    )
+                    self.bridge.set(TRAFFIC_COUNT, count)
+                    self.bridge.set(TRAFFIC_SUMMARY, summary)
+                except Exception:
+                    _log.debug("traffic sequencing failed", exc_info=True)
         except Exception:
             _log.exception("failed to handle request")
             self.bridge.set(RESP_TEXT, "Stand by — unable to process that request.")

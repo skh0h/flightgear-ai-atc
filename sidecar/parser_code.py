@@ -240,6 +240,7 @@ def _runways_from_airportinfo(airportinfo: dict) -> list[Runway]:
                 length=_to_float(str(rw.get("length", "")), what="runway length"),
                 ils_freq=str(ils) if ils is not None else None,
                 entry_nodes=[int(n) for n in (rw.get("entry_nodes") or [])],
+                active=_truthy(str(rw.get("active", ""))),
             )
         )
     return runways

@@ -118,6 +118,31 @@ def test_select_runway_zero_wind_treated_as_calm() -> None:
 
 
 # ---------------------------------------------------------------------------
+# Mode A: active-runway filtering
+# ---------------------------------------------------------------------------
+
+def test_select_runway_restricts_to_active_ends() -> None:
+    """When some runways are flagged active, only those are candidates."""
+    rwy_28l_active = Runway(id="28L", heading=284.0, length=11870.0, active=True)
+    rwy_10r = Runway(id="10R", heading=104.0, length=11870.0)  # inactive
+    pic = _pic_with_runways(rwy_28l_active, rwy_10r)
+    # Easterly wind would normally favour 10R, but only 28L is active.
+    rwy = select_departure_runway(pic, wind_dir=90.0, wind_kt=12.0)
+    assert rwy is not None
+    assert rwy.id == "28L"
+
+
+def test_select_runway_falls_back_to_all_when_none_active() -> None:
+    """With no runway flagged active, all runways remain candidates (no-op)."""
+    pic = _pic_with_runways(_RWY_28L, _RWY_10R, _RWY_28R, _RWY_10L)
+    assert all(not r.active for r in pic.runways)
+    # Easterly wind across ALL runways → a 10-series end.
+    rwy = select_departure_runway(pic, wind_dir=90.0, wind_kt=12.0)
+    assert rwy is not None
+    assert rwy.id in ("10L", "10R")
+
+
+# ---------------------------------------------------------------------------
 # start_node_for_position
 # ---------------------------------------------------------------------------
 

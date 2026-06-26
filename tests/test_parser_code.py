@@ -128,6 +128,20 @@ def test_airportinfo_merges_runways_and_freq_override() -> None:
     assert pic.frequencies.ground == "121.80"
 
 
+def test_airportinfo_runway_active_flag_defaults_false_and_reads_truthy() -> None:
+    """Mode A: the 'active' flag is read from airportinfo, defaulting to False."""
+    airportinfo = {
+        "runways": [
+            {"id": "28L", "heading": 284.0, "active": "1"},
+            {"id": "10R", "heading": 104.0},  # absent -> inactive
+        ]
+    }
+    pic = parse_groundnet(str(_FIXTURE), "KSFO", airportinfo=airportinfo)
+    by_id = {r.id: r for r in pic.runways}
+    assert by_id["28L"].active is True
+    assert by_id["10R"].active is False
+
+
 def test_accepts_raw_xml_text_and_bytes() -> None:
     xml = (
         "<groundnet><TaxiNodes>"

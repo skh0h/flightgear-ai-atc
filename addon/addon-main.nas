@@ -41,6 +41,10 @@ var _set_defaults = func {
     setprop(ROOT ~ "/backend", "Not running — launch run-mac.command");
     setprop(ROOT ~ "/airport/icao", "");
     setprop(ROOT ~ "/airport/name", "");
+    # Mode B live traffic display — seed so the dialog's live bindings render
+    # before the sidecar writes the first sequencing summary.
+    setprop(ROOT ~ "/traffic/summary", "");
+    setprop(ROOT ~ "/traffic/count", 0);
 };
 
 # Append one line to the scrolling transcript.
@@ -112,6 +116,16 @@ var request = func(req_type) {
     _start_watchdog();
 };
 
+# Mode A: set runway[idx]/active to "1" (active) or "0" (inactive). Exposed on
+# globals.aiatc so dialog <checkbox> bindings (which run in the global scope,
+# not the add-on scope) can toggle a runway via aiatc.set_runway_active(idx, on).
+# `on` is coerced to a string "1"/"0" so the sidecar's merge_airport_mailbox
+# sees the exact contract value regardless of how PUI wrote the checkbox state.
+var set_runway_active = func(idx, on) {
+    var pfx = ROOT ~ "/airport/runway[" ~ idx ~ "]";
+    setprop(pfx ~ "/active", on ? "1" : "0");
+};
+
 # Publish runway + frequency data from airportinfo() into the /ai-atc/airport/
 # mailbox so the Python sidecar can read real runway/frequency data.
 var publish_airport_data = func(icao) {
@@ -177,6 +191,11 @@ var publish_airport_data = func(icao) {
             } else {
                 setprop(pfx ~ "/ils_freq", "");
             }
+            # Mode A: publish per-runway active state, defaulting to "1"
+            # (active) unless a stored config value already exists for this
+            # slot (e.g. the user previously unchecked it in the dialog).
+            var active = getprop(pfx ~ "/active");
+            if (active == nil or active == "") setprop(pfx ~ "/active", "1");
         }, nil, _err);
         if (size(_err) == 0) n += 1;
     }
@@ -212,7 +231,7 @@ var main = func(addon) {
     # Expose request() in the global namespace so dialog <command>nasal</command>
     # bindings (which run in the global scope, not the add-on scope) can reach it
     # via the short name  aiatc.request("pushback")  etc.
-    globals.aiatc = { request: request };
+    globals.aiatc = { request: request, set_runway_active: set_runway_active };
 
     # Surface each new clearance in the transcript as the sidecar writes it.
     append(_listeners, setlistener(ROOT ~ "/response/text", func(n) {

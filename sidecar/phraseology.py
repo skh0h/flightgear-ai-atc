@@ -41,6 +41,16 @@ class PhraseResult(BaseModel):
     text: str
 
 
+def _safe_rwy(s: str) -> str:
+    """Return s if it is a real runway id; empty string if it is a FG bool token.
+
+    FG telnet can serialize a bool-false property as the literal token 'false'.
+    This backstop ensures that artifact never appears as a spoken runway id or
+    hold-short point.
+    """
+    return s if s and s.lower() not in ("false", "true") else ""
+
+
 def phrase_offline(clearance: Clearance) -> str:
     """Render a clearance using deterministic templates."""
     callsign = clearance.callsign or "Aircraft"
@@ -48,31 +58,31 @@ def phrase_offline(clearance: Clearance) -> str:
 
     if ctype == "pushback":
         sentence = f"{callsign}, pushback approved"
-        if clearance.active_runway:
+        if _safe_rwy(clearance.active_runway):
             sentence += f", expect runway {clearance.active_runway}"
         sentence += "."
     elif ctype == "takeoff":
-        runway = clearance.active_runway or "the active runway"
+        runway = _safe_rwy(clearance.active_runway) or "the active runway"
         sentence = f"{callsign}, runway {runway}, cleared for takeoff."
     elif ctype == "approach":
-        runway = clearance.active_runway or "active runway"
+        runway = _safe_rwy(clearance.active_runway) or "active runway"
         sentence = f"{callsign}, expect approach runway {runway}."
     elif ctype == "ils":
-        runway = clearance.active_runway or "active runway"
+        runway = _safe_rwy(clearance.active_runway) or "active runway"
         sentence = f"{callsign}, cleared ILS runway {runway} approach."
     elif ctype == "airfield_in_sight":
-        runway = clearance.active_runway or "active runway"
+        runway = _safe_rwy(clearance.active_runway) or "active runway"
         sentence = f"{callsign}, cleared visual approach runway {runway}."
     elif ctype == "radio_check":
         sentence = f"{callsign}, reading you five by five."
     else:  # taxi (default)
         parts = [f"{callsign}, taxi"]
-        if clearance.active_runway:
+        if _safe_rwy(clearance.active_runway):
             parts.append(f"to runway {clearance.active_runway}")
         if clearance.taxi_route:
             parts.append("via " + ", ".join(clearance.taxi_route))
         sentence = " ".join(parts)
-        if clearance.hold_short:
+        if _safe_rwy(clearance.hold_short):
             sentence += f", hold short of {clearance.hold_short}"
         sentence += "."
 

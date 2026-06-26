@@ -8,7 +8,9 @@ from sidecar.airport_picture import (
     Frequencies,
     Node,
     ParkingSpot,
+    Runway,
     Segment,
+    TrafficSnapshot,
     build_taxi_graph,
 )
 
@@ -87,3 +89,49 @@ def test_ai_response_schema_excludes_computed_fields() -> None:
     assert "groundnet_hash" not in fields
     assert "generated_at" not in fields
     assert "taxiway_labels" in fields
+
+
+# ---------------------------------------------------------------------------
+# Mode A: Runway.active backward-compatibility
+# ---------------------------------------------------------------------------
+
+
+def test_runway_without_active_field_defaults_false() -> None:
+    """Old cached Runway JSON predating the 'active' field still validates."""
+    old_json = '{"id": "28L", "heading": 284.0}'
+    rwy = Runway.model_validate_json(old_json)
+    assert rwy.active is False
+
+
+def test_runway_active_round_trips() -> None:
+    rwy = Runway(id="28L", active=True)
+    restored = Runway.model_validate_json(rwy.model_dump_json())
+    assert restored.active is True
+
+
+def test_airport_picture_with_old_runway_json_loads_active_false() -> None:
+    """A whole cached picture whose runway lacks 'active' loads cleanly."""
+    pic = _sample_picture().model_copy(update={"runways": [Runway(id="28L")]})
+    raw = pic.model_dump_json()
+    # Strip the active key to mimic a pre-Mode-A cache entry.
+    assert '"active":false' in raw.replace(" ", "")
+    restored = AirportPicture.model_validate_json(raw)
+    assert restored.runways[0].active is False
+
+
+# ---------------------------------------------------------------------------
+# Mode B: TrafficSnapshot data model (not part of the AI schema)
+# ---------------------------------------------------------------------------
+
+
+def test_traffic_snapshot_defaults() -> None:
+    snap = TrafficSnapshot(lat=37.6, lon=-122.38)
+    assert snap.callsign == ""
+    assert snap.heading == 0.0
+    assert snap.node_index is None
+    assert snap.snap_dist_m == 0.0
+
+
+def test_traffic_snapshot_not_in_ai_schema() -> None:
+    # The AI response schema must remain untouched (taxiway labels only).
+    assert "traffic" not in str(AIAirportResponse.model_fields).lower()

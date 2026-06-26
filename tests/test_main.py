@@ -516,3 +516,232 @@ def test_handle_trigger_arrival_offline_template_exact(
     assert bridge.props[STATUS] == "idle"
     assert bridge.props[REQ_TRIGGER] == 0
     assert backend.said
+
+
+# ---------------------------------------------------------------------------
+# Regression: FG telnet bool-false artifact must never leak into clearance
+# ---------------------------------------------------------------------------
+
+
+def test_fg_bool_false_not_spoken_as_runway_or_callsign(tmp_path: Path) -> None:
+    """When FG telnet serializes a bool-false property as the token 'false',
+    that string must not appear in the spoken clearance as a callsign or runway
+    identifier.  Callsign must fall back to 'Aircraft'; runway auto-selection
+    must engage so a real runway (28L) is used instead.
+    """
+    pic = _synthetic_picture()
+    props = {
+        AIRPORT_ID: pic.icao,
+        REQ_TYPE: "taxi",
+        REQ_CALLSIGN: "false",   # FG bool-false artifact
+        REQ_RUNWAY: "false",     # FG bool-false artifact
+        POS_LAT: "37.620",
+        POS_LON: "-122.380",
+        REQ_TRIGGER: "1",
+    }
+    sidecar, bridge, backend = _make_with_picture(tmp_path, props, pic)
+    sidecar.handle_trigger()
+
+    resp = bridge.props[RESP_TEXT]
+    assert "false" not in resp.lower(), f"'false' leaked into clearance: {resp!r}"
+    assert "Aircraft" in resp, f"callsign should fall back to 'Aircraft': {resp!r}"
+    assert "28L" in resp, f"runway should auto-select to 28L: {resp!r}"
+    assert bridge.props[RESP_READY] == 1
+    assert bridge.props[REQ_TRIGGER] == 0
+
+
+# ---------------------------------------------------------------------------
+# Mode A: merge_airport_mailbox reads runway active flags
+# ---------------------------------------------------------------------------
+
+
+def test_merge_airport_mailbox_reads_active_flags() -> None:
+    from sidecar.main import (
+        AP_RUNWAY_COUNT,
+        AP_RUNWAY_PREFIX,
+        merge_airport_mailbox,
+    )
+
+    pic = _synthetic_picture()
+    props = {
+        AP_RUNWAY_COUNT: "2",
+        f"{AP_RUNWAY_PREFIX}[0]/id": "28L",
+        f"{AP_RUNWAY_PREFIX}[0]/heading": "284",
+        f"{AP_RUNWAY_PREFIX}[0]/active": "1",
+        f"{AP_RUNWAY_PREFIX}[1]/id": "10R",
+        f"{AP_RUNWAY_PREFIX}[1]/heading": "104",
+        f"{AP_RUNWAY_PREFIX}[1]/active": "0",
+    }
+    merged = merge_airport_mailbox(pic, _FakeBridge(props))
+    by_id = {r.id: r for r in merged.runways}
+    assert by_id["28L"].active is True
+    assert by_id["10R"].active is False
+
+
+def test_merge_airport_mailbox_active_absent_defaults_false() -> None:
+    from sidecar.main import (
+        AP_RUNWAY_COUNT,
+        AP_RUNWAY_PREFIX,
+        merge_airport_mailbox,
+    )
+
+    pic = _synthetic_picture()
+    props = {
+        AP_RUNWAY_COUNT: "1",
+        f"{AP_RUNWAY_PREFIX}[0]/id": "28L",
+        f"{AP_RUNWAY_PREFIX}[0]/heading": "284",
+        # no /active key published
+    }
+    merged = merge_airport_mailbox(pic, _FakeBridge(props))
+    assert merged.runways[0].active is False
+
+
+# ---------------------------------------------------------------------------
+# Mode B: read_ai_traffic + compute_traffic_queue + handle_trigger wiring
+# ---------------------------------------------------------------------------
+
+
+def test_read_ai_traffic_snaps_drops_far_and_stops_at_blank() -> None:
+    from sidecar import routing
+    from sidecar.main import AI_MODELS_PREFIX, read_ai_traffic
+
+    pic = _synthetic_picture()  # node 1 @ (37.620,-122.380), node 2 @ (37.625,-122.385)
+    ai = AI_MODELS_PREFIX
+    props = {
+        # aircraft[0]: near node 1 → snapped & kept
+        f"{ai}[0]/valid": "true",
+        f"{ai}[0]/callsign": "DLH123",
+        f"{ai}[0]/position/latitude-deg": "37.6201",
+        f"{ai}[0]/position/longitude-deg": "-122.3801",
+        f"{ai}[0]/orientation/true-heading-deg": "90",
+        # aircraft[1]: far away → dropped (> max_snap_m) but probing continues
+        f"{ai}[1]/valid": "1",
+        f"{ai}[1]/callsign": "FAR1",
+        f"{ai}[1]/position/latitude-deg": "40.0",
+        f"{ai}[1]/position/longitude-deg": "-120.0",
+        # aircraft[2]: valid blank → probing stops here
+    }
+    snaps = read_ai_traffic(_FakeBridge(props), pic)
+    assert [s.callsign for s in snaps] == ["DLH123"]
+    assert snaps[0].node_index == routing.nearest_node(pic, 37.6201, -122.3801)
+    assert snaps[0].snap_dist_m >= 0.0
+
+
+def test_read_ai_traffic_stops_at_first_invalid_entry() -> None:
+    from sidecar.main import AI_MODELS_PREFIX, read_ai_traffic
+
+    pic = _synthetic_picture()
+    ai = AI_MODELS_PREFIX
+    props = {
+        f"{ai}[0]/valid": "1",
+        f"{ai}[0]/callsign": "AAL1",
+        f"{ai}[0]/position/latitude-deg": "37.6201",
+        f"{ai}[0]/position/longitude-deg": "-122.3801",
+        # aircraft[1] valid is blank → STOP before reaching aircraft[2]
+        f"{ai}[2]/valid": "1",
+        f"{ai}[2]/callsign": "SHOULD_NOT_APPEAR",
+        f"{ai}[2]/position/latitude-deg": "37.6201",
+        f"{ai}[2]/position/longitude-deg": "-122.3801",
+    }
+    snaps = read_ai_traffic(_FakeBridge(props), pic)
+    assert [s.callsign for s in snaps] == ["AAL1"]
+
+
+def test_read_ai_traffic_drops_null_island() -> None:
+    from sidecar.main import AI_MODELS_PREFIX, read_ai_traffic
+
+    pic = _synthetic_picture()
+    ai = AI_MODELS_PREFIX
+    props = {
+        f"{ai}[0]/valid": "1",
+        f"{ai}[0]/callsign": "ZERO",
+        f"{ai}[0]/position/latitude-deg": "0",
+        f"{ai}[0]/position/longitude-deg": "0",
+        f"{ai}[1]/valid": "1",
+        f"{ai}[1]/callsign": "GOOD",
+        f"{ai}[1]/position/latitude-deg": "37.6201",
+        f"{ai}[1]/position/longitude-deg": "-122.3801",
+    }
+    snaps = read_ai_traffic(_FakeBridge(props), pic)
+    assert [s.callsign for s in snaps] == ["GOOD"]
+
+
+def test_compute_traffic_queue_user_behind_traffic() -> None:
+    from sidecar.airport_picture import TrafficSnapshot
+    from sidecar.main import compute_traffic_queue
+
+    pic = _synthetic_picture()  # node 2 is the only on-runway node
+    # DLH123 sits at the runway entrance; the user is back at the gate (node 1).
+    traffic = [TrafficSnapshot(callsign="DLH123", lat=37.6249, lon=-122.3849)]
+    count, summary = compute_traffic_queue(traffic, user_node_index=1, picture=pic)
+    assert count == 1
+    assert summary == "Ground traffic: 1. You are number 2, behind DLH123."
+
+
+def test_compute_traffic_queue_empty_is_number_one() -> None:
+    from sidecar.main import compute_traffic_queue
+
+    pic = _synthetic_picture()
+    count, summary = compute_traffic_queue([], user_node_index=1, picture=pic)
+    assert count == 0
+    assert "number 1" in summary
+
+
+def test_handle_trigger_taxi_writes_traffic_summary(tmp_path: Path) -> None:
+    from sidecar.main import AI_MODELS_PREFIX, TRAFFIC_COUNT, TRAFFIC_SUMMARY
+
+    pic = _synthetic_picture()
+    ai = AI_MODELS_PREFIX
+    props = {
+        AIRPORT_ID: pic.icao,
+        REQ_TYPE: "taxi",
+        REQ_CALLSIGN: "UAL9",
+        REQ_RUNWAY: "",
+        POS_LAT: "37.620",
+        POS_LON: "-122.380",
+        REQ_TRIGGER: "1",
+        f"{ai}[0]/valid": "1",
+        f"{ai}[0]/callsign": "DLH123",
+        f"{ai}[0]/position/latitude-deg": "37.6249",
+        f"{ai}[0]/position/longitude-deg": "-122.3849",
+        f"{ai}[0]/orientation/true-heading-deg": "284",
+    }
+    sidecar, bridge, backend = _make_with_picture(tmp_path, props, pic)
+    sidecar.handle_trigger()
+
+    assert "DLH123" in bridge.props[TRAFFIC_SUMMARY]
+    assert bridge.props[TRAFFIC_COUNT] == 1
+    # Clearance must still be produced normally.
+    assert bridge.props[RESP_READY] == 1
+    assert bridge.props[REQ_TRIGGER] == 0
+    assert backend.said
+
+
+def test_handle_trigger_traffic_failure_still_writes_response(
+    tmp_path: Path, monkeypatch: Any
+) -> None:
+    import sidecar.main as main_mod
+
+    pic = _synthetic_picture()
+    props = {
+        AIRPORT_ID: pic.icao,
+        REQ_TYPE: "taxi",
+        REQ_CALLSIGN: "UAL9",
+        REQ_RUNWAY: "",
+        POS_LAT: "37.620",
+        POS_LON: "-122.380",
+        REQ_TRIGGER: "1",
+    }
+    sidecar, bridge, backend = _make_with_picture(tmp_path, props, pic)
+
+    def _boom(*_a: Any, **_k: Any) -> Any:
+        raise RuntimeError("traffic blew up")
+
+    monkeypatch.setattr(main_mod, "read_ai_traffic", _boom)
+    sidecar.handle_trigger()
+
+    # Traffic sequencing failed, but the clearance response is intact.
+    assert bridge.props[RESP_TEXT].startswith("UAL9")
+    assert bridge.props[RESP_READY] == 1
+    assert bridge.props[STATUS] == "idle"
+    assert bridge.props[REQ_TRIGGER] == 0

@@ -38,6 +38,13 @@
     <format>Status:  %s</format>
     <halign>left</halign>
   </text>
+  <!-- Mode B: live ground-traffic sequencing summary written by the sidecar. -->
+  <text>
+    <property>/ai-atc/traffic/summary</property>
+    <live type="bool">true</live>
+    <format>Traffic: %s</format>
+    <halign>left</halign>
+  </text>
 
   <!-- ── Frequencies ─────────────────────────────────────────────── -->
   <group>
@@ -69,6 +76,49 @@
       <format>  DEP: %s</format>
     </text>
   </group>
+
+  <!-- ── Active runways (Mode A) ─────────────────────────────────── -->
+  <!-- Static PUI XML cannot generate a checkbox per dynamic runway slot, so we
+       expose the first two runway slots (the common single/parallel-runway
+       case). Each checkbox is bound live to /ai-atc/airport/runway[i]/active and
+       its <binding> re-normalises the toggled state to "1"/"0" via
+       aiatc.set_runway_active(i, ...). The adjacent live <text> shows the actual
+       runway id for that slot. Any further runway slots default to active "1"
+       (published by publish_airport_data) and are simply not toggleable here. -->
+  <group>
+    <layout>hbox</layout>
+    <default-padding type="int">4</default-padding>
+    <text><label>Active runways:</label></text>
+    <checkbox>
+      <property>/ai-atc/airport/runway[0]/active</property>
+      <live type="bool">true</live>
+      <binding>
+        <command>nasal</command>
+        <script>aiatc.set_runway_active(0, getprop("/ai-atc/airport/runway[0]/active"));</script>
+      </binding>
+    </checkbox>
+    <text>
+      <property>/ai-atc/airport/runway[0]/id</property>
+      <live type="bool">true</live>
+    </text>
+    <text><label>   </label></text>
+    <checkbox>
+      <property>/ai-atc/airport/runway[1]/active</property>
+      <live type="bool">true</live>
+      <binding>
+        <command>nasal</command>
+        <script>aiatc.set_runway_active(1, getprop("/ai-atc/airport/runway[1]/active"));</script>
+      </binding>
+    </checkbox>
+    <text>
+      <property>/ai-atc/airport/runway[1]/id</property>
+      <live type="bool">true</live>
+    </text>
+  </group>
+  <text>
+    <label>(Unchecked = runway closed for this session; other runways default active.)</label>
+    <halign>left</halign>
+  </text>
 
   <!-- ── Inputs: callsign + runway ───────────────────────────────── -->
   <group>
