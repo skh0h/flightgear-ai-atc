@@ -45,6 +45,10 @@ class Settings:
     stt_engine: str = "none"  # STT_ENGINE: "none" | "whisper"
     whisper_bin: str = "whisper"  # WHISPER_BIN: whisper executable name/path
     radio_static: bool = False  # set RADIO_STATIC=1 to enable the static hook
+    # --- Phase 9: gamification / training ---
+    # Path to the JSON career-stats file.  Empty string (the default) disables
+    # career persistence so the offline path is unaffected.
+    career_path: str = ""  # CAREER_PATH: path to career-stats JSON ("" = off)
 
 
 def load(env_path: str | None = None) -> Settings:
@@ -124,6 +128,9 @@ def load(env_path: str | None = None) -> Settings:
     whisper_bin = os.environ.get("WHISPER_BIN", "whisper").strip() or "whisper"
     radio_static = os.environ.get("RADIO_STATIC", "0").strip() in ("1", "true", "yes")
 
+    # --- Phase 9: career persistence path (empty = off) ---
+    career_path = os.environ.get("CAREER_PATH", "").strip()
+
     return Settings(
         gemini_api_key=gemini_api_key,
         fg_telnet_host=fg_telnet_host,
@@ -142,4 +149,5 @@ def load(env_path: str | None = None) -> Settings:
         stt_engine=stt_engine,
         whisper_bin=whisper_bin,
         radio_static=radio_static,
+        career_path=career_path,
     )

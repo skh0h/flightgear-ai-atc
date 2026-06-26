@@ -896,3 +896,96 @@ def test_build_prompt_includes_type_guidance_for_phase8_tokens() -> None:
         prompt = _build_prompt(c)
         assert _TYPE_GUIDANCE[ctype] in prompt
         assert "aircraft type" not in prompt
+
+
+# ---------------------------------------------------------------------------
+# Phase 9: training / gamification announce types (scenario/kneeboard/career)
+# ---------------------------------------------------------------------------
+
+
+def test_phrase_offline_scenario_voices_remarks_verbatim() -> None:
+    """A scenario clearance voices the supplied summary after the callsign only."""
+    c = Clearance(
+        callsign="N12",
+        clearance_type="scenario",
+        remarks="Training scenario at KSFO: VFR, wind 250 at 8 knots.",
+    )
+    assert phrase_offline(c) == (
+        "N12, Training scenario at KSFO: VFR, wind 250 at 8 knots."
+    )
+
+
+def test_phrase_offline_scenario_default_when_no_remarks() -> None:
+    """With no remarks a scenario falls back to a fixed default body."""
+    c = Clearance(callsign="N12", clearance_type="scenario")
+    assert phrase_offline(c) == "N12, training scenario ready."
+
+
+def test_phrase_offline_kneeboard_voices_remarks_verbatim() -> None:
+    c = Clearance(
+        callsign="N12",
+        clearance_type="kneeboard",
+        remarks="kneeboard updated for KSFO, 1 active runway(s).",
+    )
+    assert phrase_offline(c) == "N12, kneeboard updated for KSFO, 1 active runway(s)."
+
+
+def test_phrase_offline_kneeboard_default_when_no_remarks() -> None:
+    c = Clearance(callsign="N12", clearance_type="kneeboard")
+    assert phrase_offline(c) == "N12, kneeboard updated and available."
+
+
+def test_phrase_offline_career_voices_remarks_verbatim() -> None:
+    c = Clearance(
+        callsign="N12",
+        clearance_type="career",
+        remarks="career rank Student, 30 points, 3 landings logged.",
+    )
+    assert phrase_offline(c) == "N12, career rank Student, 30 points, 3 landings logged."
+
+
+def test_phrase_offline_career_default_when_no_remarks() -> None:
+    c = Clearance(callsign="N12", clearance_type="career")
+    assert phrase_offline(c) == "N12, career stats updated."
+
+
+def test_phrase_offline_announce_types_never_append_freq_or_remarks_tail() -> None:
+    """Announce types return early: no 'Contact ...' or doubled remarks tail."""
+    c = Clearance(
+        callsign="N12",
+        clearance_type="kneeboard",
+        remarks="kneeboard ready.",
+        frequency="121.9",
+    )
+    assert phrase_offline(c) == "N12, kneeboard ready."
+
+
+def test_phrase_online_returns_model_text_for_scenario() -> None:
+    client = _FakeClient(
+        response=PhraseResult(text="November 12, training scenario set: VFR, light wind.")
+    )
+    c = Clearance(callsign="N12", clearance_type="scenario", remarks="VFR, light wind.")
+    assert phrase_online(c, client) == (  # type: ignore[arg-type]
+        "November 12, training scenario set: VFR, light wind."
+    )
+    assert client.calls == 1
+
+
+def test_phrase_online_falls_back_for_career_on_offline_error() -> None:
+    client = _FakeClient(raise_offline=True)
+    c = Clearance(
+        callsign="N12",
+        clearance_type="career",
+        remarks="career rank Student, 30 points.",
+    )
+    assert phrase_online(c, client) == phrase_offline(c)  # type: ignore[arg-type]
+
+
+def test_build_prompt_includes_type_guidance_for_phase9_tokens() -> None:
+    from sidecar.phraseology import _TYPE_GUIDANCE, _build_prompt
+
+    for ctype in ("scenario", "kneeboard", "career"):
+        c = Clearance(callsign="N12", clearance_type=ctype)
+        prompt = _build_prompt(c)
+        assert _TYPE_GUIDANCE[ctype] in prompt
+        assert "aircraft type" not in prompt

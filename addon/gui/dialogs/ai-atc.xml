@@ -482,6 +482,43 @@
     </button>
   </group>
 
+  <!-- ── Training: scenario / kneeboard / career ─────────────────── -->
+  <!-- Request tokens consumed by the sidecar: scenario, kneeboard, career.
+       Each fires aiatc.request("<token>") exactly like the Departure/Arrival
+       groups; the sidecar maps the token to phraseology and, for "kneeboard",
+       also publishes the rendered kneeboard text to /ai-atc/kneeboard (shown
+       live below the transcript). -->
+  <group>
+    <layout>hbox</layout>
+    <default-padding type="int">4</default-padding>
+    <halign>center</halign>
+    <text><label>Training: </label></text>
+    <button>
+      <legend>Scenario</legend>
+      <pref-width type="int">90</pref-width>
+      <binding>
+        <command>nasal</command>
+        <script>aiatc.request("scenario");</script>
+      </binding>
+    </button>
+    <button>
+      <legend>Kneeboard</legend>
+      <pref-width type="int">95</pref-width>
+      <binding>
+        <command>nasal</command>
+        <script>aiatc.request("kneeboard");</script>
+      </binding>
+    </button>
+    <button>
+      <legend>Career</legend>
+      <pref-width type="int">80</pref-width>
+      <binding>
+        <command>nasal</command>
+        <script>aiatc.request("career");</script>
+      </binding>
+    </button>
+  </group>
+
   <!-- ── Transcript ──────────────────────────────────────────────── -->
   <textbox>
     <name>atc-log</name>
@@ -490,6 +527,25 @@
     <editable type="bool">false</editable>
     <slider type="int">15</slider>
     <property>/ai-atc/log</property>
+    <live type="bool">true</live>
+    <stretch type="bool">true</stretch>
+  </textbox>
+
+  <!-- ── Kneeboard (live training reference) ─────────────────────── -->
+  <!-- Multi-line training reference text published by the sidecar to
+       /ai-atc/kneeboard (e.g. on a "kneeboard" / "scenario" / "career"
+       request). Editable=false so it is a read-only live display. -->
+  <text>
+    <label>Kneeboard:</label>
+    <halign>left</halign>
+  </text>
+  <textbox>
+    <name>atc-kneeboard</name>
+    <rows type="int">6</rows>
+    <cols type="int">60</cols>
+    <editable type="bool">false</editable>
+    <slider type="int">15</slider>
+    <property>/ai-atc/kneeboard</property>
     <live type="bool">true</live>
     <stretch type="bool">true</stretch>
   </textbox>

@@ -14,6 +14,7 @@
 #                                          "squawk_7500" | "squawk_7600" | "squawk_7700"
 #                               info:      "ctaf" | "fss_briefing" | "simbrief" |
 #                                          "airspace_check"
+#                               training:  "scenario" | "kneeboard" | "career"
 #   /ai-atc/request/callsign  (string) aircraft callsign, e.g. "N12345"
 #   /ai-atc/request/runway    (string) requested/active runway, e.g. "28R"
 #   /ai-atc/request/destination (string) IFR destination ICAO, best-effort from the
@@ -54,6 +55,10 @@
 #   /ai-atc/airspace/warning  (string) human-readable airspace advisory published by
 #                               publish_airspace() (default ""); read by the sidecar and
 #                               shown live in the dialog
+#   /ai-atc/kneeboard         (string) multi-line training reference text published by
+#                               the sidecar (e.g. on a "kneeboard" / "scenario" /
+#                               "career" request); seeded blank by the add-on and shown
+#                               live in the dialog's read-only Kneeboard textbox
 #
 # The Python sidecar polls /ai-atc/request/trigger over the FG telnet interface.
 # When triggered it reads context props, generates a clearance, writes
@@ -121,6 +126,10 @@ var _set_defaults = func {
     # values before the first publish.
     setprop(ROOT ~ "/airspace/class", "G");
     setprop(ROOT ~ "/airspace/warning", "");
+    # Training kneeboard reference text published by the sidecar (e.g. on a
+    # "kneeboard" / "scenario" / "career" request); seeded blank so the dialog's
+    # live read-only Kneeboard textbox renders before the first publish.
+    setprop(ROOT ~ "/kneeboard", "");
 };
 
 # Append one line to the scrolling transcript.
