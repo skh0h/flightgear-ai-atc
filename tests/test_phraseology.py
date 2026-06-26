@@ -164,3 +164,66 @@ def test_phrase_online_falls_back_for_ils_on_offline_error() -> None:
     client = _FakeClient(raise_offline=True)
     c = Clearance(callsign="UAL1", clearance_type="ils", active_runway="28R")
     assert phrase_online(c, client) == phrase_offline(c)  # type: ignore[arg-type]
+
+
+def test_phrase_online_returns_model_text_for_approach() -> None:
+    client = _FakeClient(response=PhraseResult(text="United 1, expect the visual, runway 28R."))
+    c = Clearance(callsign="UAL1", clearance_type="approach", active_runway="28R")
+    assert phrase_online(c, client) == "United 1, expect the visual, runway 28R."  # type: ignore[arg-type]
+    assert client.calls == 1
+
+
+def test_phrase_online_falls_back_for_approach_on_offline_error() -> None:
+    client = _FakeClient(raise_offline=True)
+    c = Clearance(callsign="UAL1", clearance_type="approach", active_runway="28R")
+    assert phrase_online(c, client) == phrase_offline(c)  # type: ignore[arg-type]
+
+
+def test_phrase_online_returns_model_text_for_ils() -> None:
+    client = _FakeClient(response=PhraseResult(text="Delta 5, cleared ILS runway 10 left."))
+    c = Clearance(callsign="DAL5", clearance_type="ils", active_runway="10L")
+    assert phrase_online(c, client) == "Delta 5, cleared ILS runway 10 left."  # type: ignore[arg-type]
+    assert client.calls == 1
+
+
+def test_phrase_online_returns_model_text_for_airfield_in_sight() -> None:
+    client = _FakeClient(
+        response=PhraseResult(text="November 12, cleared visual approach runway 1.")
+    )
+    c = Clearance(callsign="N12", clearance_type="airfield_in_sight", active_runway="01")
+    assert phrase_online(c, client) == "November 12, cleared visual approach runway 1."  # type: ignore[arg-type]
+    assert client.calls == 1
+
+
+def test_phrase_online_falls_back_for_airfield_in_sight_on_offline_error() -> None:
+    client = _FakeClient(raise_offline=True)
+    c = Clearance(callsign="N12", clearance_type="airfield_in_sight", active_runway="01")
+    assert phrase_online(c, client) == phrase_offline(c)  # type: ignore[arg-type]
+
+
+def test_phrase_online_returns_model_text_for_radio_check() -> None:
+    client = _FakeClient(response=PhraseResult(text="Southwest 9, reading you loud and clear."))
+    c = Clearance(callsign="SWA9", clearance_type="radio_check")
+    assert phrase_online(c, client) == "Southwest 9, reading you loud and clear."  # type: ignore[arg-type]
+    assert client.calls == 1
+
+
+def test_phrase_online_falls_back_for_radio_check_on_offline_error() -> None:
+    client = _FakeClient(raise_offline=True)
+    c = Clearance(callsign="SWA9", clearance_type="radio_check")
+    assert phrase_online(c, client) == phrase_offline(c)  # type: ignore[arg-type]
+
+
+# ---------------------------------------------------------------------------
+# _build_prompt: per-type guidance (Phase 1)
+# ---------------------------------------------------------------------------
+
+
+def test_build_prompt_includes_type_guidance_for_arrival() -> None:
+    """_build_prompt appends the per-type ICAO guidance for an arrival type."""
+    from sidecar.phraseology import _TYPE_GUIDANCE, _build_prompt
+
+    c = Clearance(callsign="UAL1", clearance_type="approach", active_runway="28R")
+    prompt = _build_prompt(c)
+    assert _TYPE_GUIDANCE["approach"] in prompt
+    assert "approach" in prompt

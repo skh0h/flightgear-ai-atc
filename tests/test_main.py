@@ -479,3 +479,40 @@ def test_build_clearance_radio_check_no_remarks(tmp_path: Path) -> None:
     sidecar, _, _ = _make_with_picture(tmp_path, props, pic)
     clearance = sidecar._build_clearance("radio_check", "N1", pic)
     assert clearance.remarks == ""
+
+
+@pytest.mark.parametrize(
+    "req_type,expected",
+    [
+        ("approach", "UAL1, expect approach runway 28L."),
+        ("ils", "UAL1, cleared ILS runway 28L approach."),
+        ("airfield_in_sight", "UAL1, cleared visual approach runway 28L."),
+        ("radio_check", "UAL1, reading you five by five."),
+    ],
+)
+def test_handle_trigger_arrival_offline_template_exact(
+    tmp_path: Path, req_type: str, expected: str
+) -> None:
+    """Full handle_trigger cycle (offline client) writes the exact offline template.
+
+    The synthetic picture's runway has zero threshold coords, so no
+    distance/bearing remark is appended — RESP_TEXT equals the bare template.
+    """
+    pic = _synthetic_picture()
+    props = {
+        AIRPORT_ID: pic.icao,
+        REQ_TYPE: req_type,
+        REQ_CALLSIGN: "UAL1",
+        REQ_RUNWAY: "28L",
+        POS_LAT: "37.620",
+        POS_LON: "-122.380",
+        REQ_TRIGGER: "1",
+    }
+    sidecar, bridge, backend = _make_with_picture(tmp_path, props, pic)
+    sidecar.handle_trigger()
+
+    assert bridge.props[RESP_TEXT] == expected
+    assert bridge.props[RESP_READY] == 1
+    assert bridge.props[STATUS] == "idle"
+    assert bridge.props[REQ_TRIGGER] == 0
+    assert backend.said

@@ -83,6 +83,20 @@ def phrase_offline(clearance: Clearance) -> str:
     return sentence
 
 
+# Per-type ICAO-style guidance appended to the online prompt to steer phrasing.
+# Keep each value a single sentence and free of the literal phrase "aircraft
+# type" (the prompt's aircraft line is gated separately and unit-tested).
+_TYPE_GUIDANCE = {
+    "pushback": "For pushback, approve pushback and state the expected departure runway if known.",
+    "taxi": "For taxi, give the runway and the taxi route, and include any hold-short instruction.",
+    "takeoff": "For takeoff, state the departure runway and issue the takeoff clearance.",
+    "approach": "For approach, tell the pilot which runway to expect for the approach.",
+    "ils": "For an ILS approach, clear the aircraft for the ILS approach to the specified runway.",
+    "airfield_in_sight": "When the airfield is in sight, clear the aircraft for a visual approach to the runway.",
+    "radio_check": "For a radio check, reply with a readability report such as 'reading you five by five'.",
+}
+
+
 def _build_prompt(clearance: Clearance) -> str:
     route = ", ".join(clearance.taxi_route) if clearance.taxi_route else "(none)"
     aircraft_line = (
@@ -90,6 +104,8 @@ def _build_prompt(clearance: Clearance) -> str:
         if clearance.aircraft_type
         else ""
     )
+    guidance = _TYPE_GUIDANCE.get((clearance.clearance_type or "").lower(), "")
+    guidance_line = f"Guidance: {guidance}\n" if guidance else ""
     return (
         "Render the following ground clearance as a single, natural, "
         "ICAO-standard ATC transmission. Return only the spoken text.\n"
@@ -101,6 +117,7 @@ def _build_prompt(clearance: Clearance) -> str:
         f"- hold short of: {clearance.hold_short or '(none)'}\n"
         f"- frequency: {clearance.frequency or '(none)'}\n"
         f"- remarks: {clearance.remarks or '(none)'}\n"
+        f"{guidance_line}"
     )
 
 
