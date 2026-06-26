@@ -27,6 +27,12 @@ def _clean_env(monkeypatch: pytest.MonkeyPatch) -> None:
         "GEMINI_MODEL_FAST",
         "GEMINI_MODEL_PRO",
         "AI_TAXIWAY_LABELS",
+        "TTS_ENGINE",
+        "PIPER_BIN",
+        "PIPER_VOICE",
+        "STT_ENGINE",
+        "WHISPER_BIN",
+        "RADIO_STATIC",
     ):
         monkeypatch.delenv(key, raising=False)
 
@@ -205,3 +211,46 @@ def test_ai_taxiway_labels_not_enabled_by_zero(monkeypatch: pytest.MonkeyPatch) 
     monkeypatch.setenv("AI_TAXIWAY_LABELS", "0")
     settings = load(env_path=None)
     assert settings.ai_taxiway_labels is False
+
+
+# ---------------------------------------------------------------------------
+# Phase 5: voice-realism settings (TTS/STT/radio static)
+# ---------------------------------------------------------------------------
+
+
+def test_phase5_voice_settings_defaults(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The six Phase 5 fields fall back to safe defaults."""
+    _clean_env(monkeypatch)
+    settings = load(env_path=None)
+    assert settings.tts_engine == "say"
+    assert settings.piper_bin == "piper"
+    assert settings.piper_voice == ""
+    assert settings.stt_engine == "none"
+    assert settings.whisper_bin == "whisper"
+    assert settings.radio_static is False
+
+
+def test_phase5_voice_settings_from_env(monkeypatch: pytest.MonkeyPatch) -> None:
+    """All six Phase 5 fields parse from their environment variables."""
+    _clean_env(monkeypatch)
+    monkeypatch.setenv("TTS_ENGINE", "piper")
+    monkeypatch.setenv("PIPER_BIN", "/opt/piper/piper")
+    monkeypatch.setenv("PIPER_VOICE", "/models/en_US.onnx")
+    monkeypatch.setenv("STT_ENGINE", "whisper")
+    monkeypatch.setenv("WHISPER_BIN", "/opt/whisper/whisper")
+    monkeypatch.setenv("RADIO_STATIC", "1")
+    settings = load(env_path=None)
+    assert settings.tts_engine == "piper"
+    assert settings.piper_bin == "/opt/piper/piper"
+    assert settings.piper_voice == "/models/en_US.onnx"
+    assert settings.stt_engine == "whisper"
+    assert settings.whisper_bin == "/opt/whisper/whisper"
+    assert settings.radio_static is True
+
+
+def test_radio_static_zero_keeps_false(monkeypatch: pytest.MonkeyPatch) -> None:
+    """RADIO_STATIC=0 keeps the flag False (boolean parsing like the others)."""
+    _clean_env(monkeypatch)
+    monkeypatch.setenv("RADIO_STATIC", "0")
+    settings = load(env_path=None)
+    assert settings.radio_static is False

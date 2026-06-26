@@ -5,7 +5,13 @@ from __future__ import annotations
 from typing import Any
 
 from sidecar.gemini_client import OfflineError
-from sidecar.phraseology import Clearance, PhraseResult, phrase_offline, phrase_online
+from sidecar.phraseology import (
+    Clearance,
+    PhraseResult,
+    expected_readback,
+    phrase_offline,
+    phrase_online,
+)
 
 
 class _FakeClient:
@@ -445,6 +451,58 @@ def test_phrase_online_forwards_persona_mood_context_to_prompt() -> None:
     assert "Hiroshi Tanaka" in captured["prompt"]
     assert "Mood: weary." in captured["prompt"]
     assert "N12: taxi ->" in captured["prompt"]
+
+
+# ---------------------------------------------------------------------------
+# Phase 5: expected_readback — canonical pilot readback strings (exact)
+# ---------------------------------------------------------------------------
+
+
+def test_expected_readback_taxi_exact() -> None:
+    c = Clearance(
+        callsign="UAL123",
+        clearance_type="taxi",
+        taxi_route=["A", "B"],
+        active_runway="28R",
+        hold_short="28R",
+    )
+    assert expected_readback(c) == "runway 28R via A B hold short 28R"
+
+
+def test_expected_readback_takeoff_exact() -> None:
+    c = Clearance(callsign="DAL2", clearance_type="takeoff", active_runway="01L")
+    assert expected_readback(c) == "cleared for takeoff 01L"
+
+
+def test_expected_readback_approach_exact() -> None:
+    c = Clearance(callsign="UAL1", clearance_type="approach", active_runway="28R")
+    assert expected_readback(c) == "expect approach runway 28R"
+
+
+def test_expected_readback_pushback_exact() -> None:
+    c = Clearance(callsign="SWA45", clearance_type="pushback")
+    assert expected_readback(c) == "pushback approved"
+
+
+def test_expected_readback_ils_exact() -> None:
+    c = Clearance(callsign="DAL5", clearance_type="ils", active_runway="10L")
+    assert expected_readback(c) == "cleared ils runway 10L approach"
+
+
+def test_expected_readback_taxi_without_route() -> None:
+    c = Clearance(callsign="N12", clearance_type="taxi", active_runway="19")
+    assert expected_readback(c) == "runway 19"
+
+
+def test_expected_readback_generic_fallback_for_other_types() -> None:
+    c = Clearance(callsign="N12", clearance_type="go_around")
+    assert expected_readback(c) == "go around"
+
+
+def test_expected_readback_omits_fg_bool_false_runway() -> None:
+    """The FG bool-false 'false' artifact never leaks into a readback string."""
+    c = Clearance(callsign="N12", clearance_type="takeoff", active_runway="false")
+    assert "false" not in expected_readback(c)
 
 
 def test_phrase_offline_relief_handoff_includes_remarks() -> None:

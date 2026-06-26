@@ -357,6 +357,36 @@
     <stretch type="bool">true</stretch>
   </textbox>
 
+  <!-- ── Readback (Phase 5 push-to-talk) ─────────────────────────── -->
+  <!-- Type the readback for the latest clearance and submit it for grading.
+       The input is live-bound to /ai-atc/readback/heard; "Submit Readback"
+       fires aiatc.request("readback") (also bound to Ctrl+R via aiatc.ptt()).
+       The sidecar grades it and writes /ai-atc/readback/result, shown live. -->
+  <group>
+    <layout>hbox</layout>
+    <default-padding type="int">4</default-padding>
+    <text><label>Readback:</label></text>
+    <input>
+      <property>/ai-atc/readback/heard</property>
+      <live type="bool">true</live>
+      <pref-width type="int">260</pref-width>
+    </input>
+    <button>
+      <legend>Submit Readback</legend>
+      <pref-width type="int">120</pref-width>
+      <binding>
+        <command>nasal</command>
+        <script>aiatc.request("readback");</script>
+      </binding>
+    </button>
+  </group>
+  <text>
+    <property>/ai-atc/readback/result</property>
+    <live type="bool">true</live>
+    <format>Readback: %s</format>
+    <halign>left</halign>
+  </text>
+
   <!-- ── About + Close ───────────────────────────────────────────── -->
   <text>
     <label>AI ATC — open-source add-on for FlightGear. Not affiliated with any real ATC service.</label>

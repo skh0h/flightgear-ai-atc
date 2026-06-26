@@ -23,13 +23,16 @@ from sidecar.main import (
     REQ_RUNWAY,
     REQ_TRIGGER,
     REQ_TYPE,
+    READBACK_HEARD,
+    READBACK_RESULT,
     RESP_READY,
     RESP_TEXT,
     SIDECAR_MODE,
     STATUS,
     Sidecar,
+    role_for_clearance,
 )
-from sidecar.tts import TTS, TTSBackend
+from sidecar.tts import TTS, TTSBackend, voice_for
 
 _FIXTURE = Path(__file__).resolve().parent.parent / "fixtures" / "KSFO.groundnet.xml"
 
@@ -994,3 +997,112 @@ def test_handle_trigger_relief_handoff_regenerates_and_briefs(tmp_path: Path) ->
     assert bridge.props[STATUS] == "idle"
     assert bridge.props[REQ_TRIGGER] == 0
     assert backend.said
+
+
+# ---------------------------------------------------------------------------
+# Phase 5: pilot readback grading + per-role voice
+# ---------------------------------------------------------------------------
+
+
+def test_role_for_clearance_maps_positions() -> None:
+    from sidecar.phraseology import Clearance
+
+    assert role_for_clearance(Clearance(callsign="A", clearance_type="taxi")) == "ground"
+    assert role_for_clearance(Clearance(callsign="A", clearance_type="pushback")) == "ground"
+    assert role_for_clearance(Clearance(callsign="A", clearance_type="takeoff")) == "tower"
+    assert role_for_clearance(Clearance(callsign="A", clearance_type="approach")) == "approach"
+    assert role_for_clearance(Clearance(callsign="A", clearance_type="ils")) == "approach"
+    assert role_for_clearance(None) == "tower"
+
+
+def test_handle_trigger_taxi_speaks_with_ground_voice(tmp_path: Path) -> None:
+    """A taxi clearance is voiced with the ground controller's distinct voice."""
+    pic = _synthetic_picture()
+    props = {
+        AIRPORT_ID: pic.icao,
+        REQ_TYPE: "taxi",
+        REQ_CALLSIGN: "UAL9",
+        REQ_RUNWAY: "28L",
+        POS_LAT: "37.620",
+        POS_LON: "-122.380",
+        REQ_TRIGGER: "1",
+    }
+    sidecar, bridge, backend = _make_with_picture(tmp_path, props, pic)
+    sidecar.handle_trigger()
+    assert backend.said
+    spoken_text, spoken_voice = backend.said[-1]
+    assert spoken_voice == voice_for("ground")
+
+
+def test_handle_trigger_readback_correct(tmp_path: Path) -> None:
+    """A faithful readback of the prior taxi clearance grades as correct."""
+    from sidecar.phraseology import Clearance, expected_readback
+
+    pic = _synthetic_picture()
+    props = {
+        AIRPORT_ID: pic.icao,
+        REQ_TYPE: "taxi",
+        REQ_CALLSIGN: "UAL9",
+        REQ_RUNWAY: "28L",
+        POS_LAT: "37.620",
+        POS_LON: "-122.380",
+        REQ_TRIGGER: "1",
+    }
+    sidecar, bridge, backend = _make_with_picture(tmp_path, props, pic)
+    sidecar.handle_trigger()  # issue the clearance first
+
+    expected = expected_readback(sidecar._last_clearance)
+    bridge.props[REQ_TYPE] = "readback"
+    bridge.props[READBACK_HEARD] = expected
+    bridge.props[REQ_TRIGGER] = "1"
+    sidecar.handle_trigger()
+
+    assert "correct" in bridge.props[READBACK_RESULT].lower()
+    assert "readback correct" in bridge.props[RESP_TEXT].lower()
+    assert bridge.props[RESP_READY] == 1
+    assert bridge.props[STATUS] == "idle"
+    assert bridge.props[REQ_TRIGGER] == 0
+
+
+def test_handle_trigger_readback_incomplete_voices_correction(tmp_path: Path) -> None:
+    """A partial readback grades as incomplete and the controller re-issues it."""
+    pic = _synthetic_picture()
+    props = {
+        AIRPORT_ID: pic.icao,
+        REQ_TYPE: "taxi",
+        REQ_CALLSIGN: "UAL9",
+        REQ_RUNWAY: "28L",
+        POS_LAT: "37.620",
+        POS_LON: "-122.380",
+        REQ_TRIGGER: "1",
+    }
+    sidecar, bridge, backend = _make_with_picture(tmp_path, props, pic)
+    sidecar.handle_trigger()
+
+    bridge.props[REQ_TYPE] = "readback"
+    bridge.props[READBACK_HEARD] = "wilco"  # nothing salient
+    bridge.props[REQ_TRIGGER] = "1"
+    sidecar.handle_trigger()
+
+    assert "incomplete" in bridge.props[READBACK_RESULT].lower()
+    assert "negative" in bridge.props[RESP_TEXT].lower()
+    assert bridge.props[RESP_READY] == 1
+    assert bridge.props[REQ_TRIGGER] == 0
+
+
+def test_handle_trigger_readback_without_prior_clearance(tmp_path: Path) -> None:
+    """A readback with no active clearance never raises and still unblocks the UI."""
+    pic = _synthetic_picture()
+    props = {
+        AIRPORT_ID: pic.icao,
+        REQ_TYPE: "readback",
+        READBACK_HEARD: "runway 28L",
+        REQ_TRIGGER: "1",
+    }
+    sidecar, bridge, backend = _make_with_picture(tmp_path, props, pic)
+    sidecar.handle_trigger()
+
+    assert bridge.props[RESP_READY] == 1
+    assert bridge.props[STATUS] == "idle"
+    assert bridge.props[REQ_TRIGGER] == 0
+    assert bridge.props.get(RESP_TEXT, "")
