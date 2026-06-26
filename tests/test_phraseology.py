@@ -610,3 +610,158 @@ def test_build_prompt_includes_type_guidance_for_lahso() -> None:
     c = Clearance(callsign="UAL1", clearance_type="lahso", active_runway="28L")
     prompt = _build_prompt(c)
     assert _TYPE_GUIDANCE["lahso"] in prompt
+
+
+# ---------------------------------------------------------------------------
+# Phase 7: IFR clearance, holding, arrival_clearance, expect_approach,
+# flow_control — offline templates (exact) + online return/fallback.
+# ---------------------------------------------------------------------------
+
+
+def test_phrase_offline_ifr_clearance_craft_exact() -> None:
+    """An ifr_clearance carrying CRAFT fields renders the full CRAFT read-out."""
+    c = Clearance(
+        callsign="UAL123",
+        clearance_type="ifr_clearance",
+        destination="KLAX",
+        route="SID then as filed",
+        altitude="FL350",
+        frequency="120.5",
+        squawk="4271",
+    )
+    assert phrase_offline(c) == (
+        "UAL123, cleared to KLAX via SID then as filed, "
+        "climb maintain FL350, departure 120.5, squawk 4271."
+    )
+
+
+def test_phrase_offline_ifr_clearance_does_not_double_append_frequency() -> None:
+    """The CRAFT departure freq must not be re-appended as a 'Contact' tail."""
+    c = Clearance(
+        callsign="UAL123",
+        clearance_type="ifr_clearance",
+        destination="KLAX",
+        route="DCT",
+        altitude="6000",
+        frequency="120.5",
+        squawk="4271",
+    )
+    out = phrase_offline(c)
+    assert "Contact 120.5" not in out
+    assert out.count("120.5") == 1
+
+
+def test_phrase_offline_ifr_clearance_generic_without_craft_fields() -> None:
+    """With no CRAFT fields, a sensible generic IFR clearance is produced."""
+    c = Clearance(callsign="N12", clearance_type="ifr_clearance")
+    assert phrase_offline(c) == (
+        "N12, cleared to destination as filed, standby for full route clearance."
+    )
+
+
+def test_phrase_offline_holding_exact() -> None:
+    c = Clearance(
+        callsign="UAL1",
+        clearance_type="holding",
+        hold_fix="BOLDR",
+        hold_direction="north",
+        efc="1830Z",
+    )
+    assert phrase_offline(c) == (
+        "UAL1, hold north of BOLDR as published, "
+        "expect further clearance at 1830Z."
+    )
+
+
+def test_phrase_offline_arrival_clearance_exact() -> None:
+    c = Clearance(
+        callsign="UAL1",
+        clearance_type="arrival_clearance",
+        active_runway="28R",
+        altitude="6000",
+    )
+    assert phrase_offline(c) == (
+        "UAL1, expect vectors for the approach runway 28R, "
+        "descend and maintain 6000."
+    )
+
+
+def test_phrase_offline_expect_approach_exact() -> None:
+    c = Clearance(callsign="DAL5", clearance_type="expect_approach", active_runway="10L")
+    assert phrase_offline(c) == "DAL5, expect the ILS approach runway 10L."
+
+
+def test_phrase_offline_flow_control_exact() -> None:
+    c = Clearance(
+        callsign="SWA9", clearance_type="flow_control", efc="14:20Z-14:30Z"
+    )
+    assert phrase_offline(c) == (
+        "SWA9, flow control in effect, "
+        "expect departure clearance time 14:20Z-14:30Z."
+    )
+
+
+def test_phrase_online_returns_model_text_for_ifr_clearance() -> None:
+    client = _FakeClient(
+        response=PhraseResult(text="United 123, cleared to Los Angeles as filed.")
+    )
+    c = Clearance(
+        callsign="UAL123",
+        clearance_type="ifr_clearance",
+        destination="KLAX",
+        route="SID then as filed",
+        altitude="FL350",
+        frequency="120.5",
+        squawk="4271",
+    )
+    assert phrase_online(c, client) == "United 123, cleared to Los Angeles as filed."  # type: ignore[arg-type]
+    assert client.calls == 1
+
+
+def test_phrase_online_falls_back_for_ifr_clearance_on_offline_error() -> None:
+    client = _FakeClient(raise_offline=True)
+    c = Clearance(
+        callsign="UAL123",
+        clearance_type="ifr_clearance",
+        destination="KLAX",
+        route="SID then as filed",
+        altitude="FL350",
+        frequency="120.5",
+        squawk="4271",
+    )
+    assert phrase_online(c, client) == phrase_offline(c)  # type: ignore[arg-type]
+
+
+def test_phrase_online_returns_model_text_for_holding() -> None:
+    client = _FakeClient(
+        response=PhraseResult(text="United 1, hold north of Boulder, as published.")
+    )
+    c = Clearance(
+        callsign="UAL1",
+        clearance_type="holding",
+        hold_fix="BOLDR",
+        hold_direction="north",
+        efc="1830Z",
+    )
+    assert phrase_online(c, client) == "United 1, hold north of Boulder, as published."  # type: ignore[arg-type]
+    assert client.calls == 1
+
+
+def test_phrase_online_falls_back_for_holding_on_offline_error() -> None:
+    client = _FakeClient(raise_offline=True)
+    c = Clearance(
+        callsign="UAL1",
+        clearance_type="holding",
+        hold_fix="BOLDR",
+        hold_direction="north",
+        efc="1830Z",
+    )
+    assert phrase_online(c, client) == phrase_offline(c)  # type: ignore[arg-type]
+
+
+def test_build_prompt_includes_type_guidance_for_ifr_clearance() -> None:
+    from sidecar.phraseology import _TYPE_GUIDANCE, _build_prompt
+
+    c = Clearance(callsign="UAL1", clearance_type="ifr_clearance", destination="KLAX")
+    prompt = _build_prompt(c)
+    assert _TYPE_GUIDANCE["ifr_clearance"] in prompt

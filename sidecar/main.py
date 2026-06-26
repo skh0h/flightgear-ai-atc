@@ -40,6 +40,7 @@ from sidecar.gemini_client import GeminiClient
 from sidecar.phraseology import Clearance
 from sidecar.runway_selection import build_taxi_clearance
 from sidecar.session_log import SessionMemory
+from sidecar.state import FlightStateMachine
 from sidecar.stt import grade_readback
 from sidecar.tts import TTS, make_tts_backend
 
@@ -65,6 +66,15 @@ AIRCRAFT_ID = "/sim/aircraft-id"
 # --- diversion: nearest-airport contract (Nasal publishes, sidecar reads) ----
 NEAREST_AIRPORT_ICAO = "/ai-atc/nearest-airport/icao"
 NEAREST_AIRPORT_NAME = "/ai-atc/nearest-airport/name"
+
+# --- Phase 7: flight-phase state machine + IFR request mailbox --------------
+# Sidecar writes the advisory flight phase; Nasal may publish the IFR request
+# fields used to build a CRAFT clearance (all optional, best-effort reads).
+FLIGHT_PHASE = "/ai-atc/flight-phase"
+REQ_ROUTE = "/ai-atc/request/route"
+REQ_DESTINATION = "/ai-atc/request/destination"
+REQ_ALTITUDE = "/ai-atc/request/altitude"
+REQ_SQUAWK = "/ai-atc/request/squawk"
 
 # --- Phase 4: personality / session memory / modes --------------------------
 # Nasal publishes MODE + LOCAL_HOUR; sidecar publishes CONTROLLER_NAME.
@@ -401,6 +411,8 @@ class Sidecar:
         # Phase 4: a stable controller identity + bounded session memory.
         self.persona = personality.generate_persona(_DEFAULT_PERSONA_SEED)
         self.memory = SessionMemory()
+        # Phase 7: advisory, forward-only flight-phase tracker (gate to gate).
+        self.fsm = FlightStateMachine()
         # Best-effort publish so the panel can show who is working the position.
         try:
             self.bridge.set(CONTROLLER_NAME, self.persona.name)
@@ -496,6 +508,24 @@ class Sidecar:
             except Exception:
                 _log.debug("distance/bearing computation failed", exc_info=True)
 
+        # IFR clearance path: best-effort read of the CRAFT request fields
+        # (route/destination/altitude/squawk) plus the departure frequency so
+        # phraseology can render a full CRAFT clearance.  All guarded; any read
+        # failure simply leaves the fields empty (generic IFR clearance).
+        ifr_route = ifr_dest = ifr_alt = ifr_squawk = ifr_dep_freq = ""
+        if eff_type == "ifr_clearance":
+            try:
+                ifr_route = _clean_fg_str(self.bridge.get(REQ_ROUTE) or "")
+                ifr_dest = _clean_fg_str(self.bridge.get(REQ_DESTINATION) or "")
+                ifr_alt = _clean_fg_str(self.bridge.get(REQ_ALTITUDE) or "")
+                ifr_squawk = _clean_fg_str(self.bridge.get(REQ_SQUAWK) or "")
+                if picture is not None and picture.frequencies is not None:
+                    ifr_dep_freq = picture.frequencies.departure or ""
+                if not ifr_dep_freq:
+                    ifr_dep_freq = _clean_fg_str(self.bridge.get(AP_FREQ_DEPARTURE) or "")
+            except Exception:
+                _log.debug("ifr clearance field read failed", exc_info=True)
+
         # Diversion path: best-effort nearest-airport lookup published by Nasal.
         divert_target = ""
         if eff_type == "diversion":
@@ -516,6 +546,11 @@ class Sidecar:
             aircraft_type=aircraft_type,
             remarks=remarks,
             divert_target=divert_target,
+            route=ifr_route,
+            destination=ifr_dest,
+            altitude=ifr_alt,
+            squawk=ifr_squawk,
+            frequency=ifr_dep_freq,
         )
 
     # ------------------------------------------------------------------
@@ -670,6 +705,15 @@ class Sidecar:
     def handle_trigger(self) -> None:
         req_type = (self.bridge.get(REQ_TYPE) or "taxi").strip()
         callsign = _clean_fg_str(self.bridge.get(REQ_CALLSIGN)) or "Aircraft"
+
+        # Phase 7: fold the request into the advisory flight-phase machine and
+        # publish the current phase.  Advisory only: on_request never raises and
+        # the publish is best-effort, so this never breaks RESP_TEXT/RESP_READY.
+        try:
+            phase = self.fsm.on_request(req_type)
+            self.bridge.set(FLIGHT_PHASE, phase)
+        except Exception:
+            _log.debug("flight-phase update failed", exc_info=True)
 
         if req_type == "cancel":
             self.bridge.set(STATUS, "idle")

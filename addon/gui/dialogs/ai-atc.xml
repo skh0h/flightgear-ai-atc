@@ -46,6 +46,13 @@
     <format>Status:  %s</format>
     <halign>left</halign>
   </text>
+  <!-- Live flight phase published by the sidecar to /ai-atc/flight-phase. -->
+  <text>
+    <property>/ai-atc/flight-phase</property>
+    <live type="bool">true</live>
+    <format>Phase:   %s</format>
+    <halign>left</halign>
+  </text>
   <!-- Mode B: live ground-traffic sequencing summary written by the sidecar. -->
   <text>
     <property>/ai-atc/traffic/summary</property>
@@ -198,6 +205,14 @@
     <halign>center</halign>
     <text><label>Departure:</label></text>
     <button>
+      <legend>IFR Clearance</legend>
+      <pref-width type="int">110</pref-width>
+      <binding>
+        <command>nasal</command>
+        <script>aiatc.request("ifr_clearance");</script>
+      </binding>
+    </button>
+    <button>
       <legend>Pushback</legend>
       <pref-width type="int">80</pref-width>
       <binding>
@@ -275,6 +290,48 @@
       <binding>
         <command>nasal</command>
         <script>aiatc.request("radio_check");</script>
+      </binding>
+    </button>
+  </group>
+
+  <!-- ── Arrival clearance / flow buttons ────────────────────────── -->
+  <!-- Phase-aware request tokens consumed by the sidecar:
+       arrival_clearance, holding, expect_approach, flow_control. -->
+  <group>
+    <layout>hbox</layout>
+    <default-padding type="int">4</default-padding>
+    <halign>center</halign>
+    <text><label>          </label></text>
+    <button>
+      <legend>Arrival Clrnc</legend>
+      <pref-width type="int">110</pref-width>
+      <binding>
+        <command>nasal</command>
+        <script>aiatc.request("arrival_clearance");</script>
+      </binding>
+    </button>
+    <button>
+      <legend>Holding</legend>
+      <pref-width type="int">75</pref-width>
+      <binding>
+        <command>nasal</command>
+        <script>aiatc.request("holding");</script>
+      </binding>
+    </button>
+    <button>
+      <legend>Expect Apch</legend>
+      <pref-width type="int">100</pref-width>
+      <binding>
+        <command>nasal</command>
+        <script>aiatc.request("expect_approach");</script>
+      </binding>
+    </button>
+    <button>
+      <legend>Flow Control</legend>
+      <pref-width type="int">100</pref-width>
+      <binding>
+        <command>nasal</command>
+        <script>aiatc.request("flow_control");</script>
       </binding>
     </button>
   </group>
