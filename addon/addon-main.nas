@@ -17,6 +17,12 @@
 #   /ai-atc/sidecar/heartbeat (int)    incremented every ~5 s by the sidecar
 #   /ai-atc/sidecar/mode      (string) "ai" | "offline" — set by the sidecar
 #   /ai-atc/backend           (string) human-readable backend status for the UI
+#   /ai-atc/mode              (string) "normal" | "student" | "checkride" — interaction
+#                               mode read by the sidecar (default "normal")
+#   /ai-atc/local-hour        (int)    sim local hour 0-23, published by the add-on for
+#                               the sidecar's quiet-night ("reflective" mood) easter egg
+#   /ai-atc/controller/name   (string) current controller persona name, published by the
+#                               sidecar; shown live in the dialog header
 #
 # The Python sidecar polls /ai-atc/request/trigger over the FG telnet interface.
 # When triggered it reads context props, generates a clearance, writes
@@ -44,6 +50,12 @@ var _set_defaults = func {
     setprop(ROOT ~ "/sidecar/heartbeat", -1);
     setprop(ROOT ~ "/sidecar/mode", "");
     setprop(ROOT ~ "/backend", "Not running — launch run-mac.command");
+    # Interaction mode + quiet-night easter-egg inputs. Seeded so the dialog's
+    # live bindings and the sidecar both see well-formed values at startup; the
+    # add-on refreshes /local-hour from sim time, the sidecar writes /controller/name.
+    setprop(ROOT ~ "/mode", "normal");
+    setprop(ROOT ~ "/local-hour", 12);
+    setprop(ROOT ~ "/controller/name", "");
     setprop(ROOT ~ "/airport/icao", "");
     setprop(ROOT ~ "/airport/name", "");
     # Best-effort nearest-airport publication for 'diversion' phrasing. Seeded
@@ -133,6 +145,16 @@ var request = func(req_type) {
 var set_runway_active = func(idx, on) {
     var pfx = ROOT ~ "/airport/runway[" ~ idx ~ "]";
     setprop(pfx ~ "/active", on ? "1" : "0");
+};
+
+# Set the controller interaction mode to one of the three contract values.
+# Exposed on globals.aiatc so the dialog's Mode buttons (which run in the global
+# scope, not the add-on scope) can call aiatc.set_mode("student") etc. Any
+# unrecognised token falls back to "normal" so the sidecar never sees an
+# out-of-contract mode value.
+var set_mode = func(m) {
+    if (m != "normal" and m != "student" and m != "checkride") m = "normal";
+    setprop(ROOT ~ "/mode", m);
 };
 
 # Publish runway + frequency data from airportinfo() into the /ai-atc/airport/
@@ -232,11 +254,37 @@ var publish_nearest_airport = func {
     # _err intentionally ignored — nearest-airport data is optional.
 };
 
+# Best-effort: publish the sim's current local hour (0-23) to /ai-atc/local-hour
+# so the sidecar can detect "quiet night" hours for the reflective-mood easter
+# egg. Prefers /sim/time/local-day-seconds (sim local time at the aircraft),
+# falling back to /sim/time/utc/hour. The whole body runs inside a call() guard,
+# so a missing or odd property simply leaves the seeded default in place and
+# never throws.
+var publish_local_hour = func {
+    var _err = [];
+    call(func {
+        var hour = nil;
+        var secs = getprop("/sim/time/local-day-seconds");
+        if (secs != nil) {
+            hour = int(math.mod(int(secs / 3600), 24));
+        } else {
+            var uh = getprop("/sim/time/utc/hour");
+            if (uh != nil) hour = int(math.mod(int(uh), 24));
+        }
+        if (hour == nil) return;
+        if (hour < 0) hour += 24;
+        setprop(ROOT ~ "/local-hour", hour);
+    }, nil, _err);
+    # _err intentionally ignored — local-hour is a best-effort easter-egg input.
+};
+
 # ---------------------------------------------------------------------------
 # Backend heartbeat watcher — updates /ai-atc/backend status string.
 # ---------------------------------------------------------------------------
 var _last_heartbeat = -2;  # sentinel: -2 = never seen, -1 = FG default
 var _heartbeat_timer = nil;
+# Periodic timer that republishes /ai-atc/local-hour from sim time (~60 s).
+var _local_hour_timer = nil;
 
 var _update_backend_status = func {
     var hb = getprop(ROOT ~ "/sidecar/heartbeat");
@@ -261,7 +309,7 @@ var main = func(addon) {
     # Expose request() in the global namespace so dialog <command>nasal</command>
     # bindings (which run in the global scope, not the add-on scope) can reach it
     # via the short name  aiatc.request("pushback")  etc.
-    globals.aiatc = { request: request, set_runway_active: set_runway_active };
+    globals.aiatc = { request: request, set_runway_active: set_runway_active, set_mode: set_mode };
 
     # Surface each new clearance in the transcript as the sidecar writes it.
     append(_listeners, setlistener(ROOT ~ "/response/text", func(n) {
@@ -300,6 +348,12 @@ var main = func(addon) {
     _heartbeat_timer = maketimer(HEARTBEAT_STALE_SEC, _update_backend_status);
     _heartbeat_timer.start();
 
+    # Publish the sim local hour now and refresh it every ~60 s so the sidecar's
+    # quiet-night ("reflective" mood) easter egg always sees a current value.
+    publish_local_hour();
+    _local_hour_timer = maketimer(60, publish_local_hour);
+    _local_hour_timer.start();
+
     # Publish airport data for the current airport at startup.
     var icao = getprop("/sim/presets/airport-id");
     publish_airport_data(icao);
@@ -330,6 +384,10 @@ var unload = func(addon) {
     if (_heartbeat_timer != nil) {
         _heartbeat_timer.stop();
         _heartbeat_timer = nil;
+    }
+    if (_local_hour_timer != nil) {
+        _local_hour_timer.stop();
+        _local_hour_timer = nil;
     }
     print("[AI ATC] addon unloaded");
 };

@@ -25,6 +25,14 @@
     </text>
   </group>
 
+  <!-- Live controller persona name, published by the sidecar. -->
+  <text>
+    <property>/ai-atc/controller/name</property>
+    <live type="bool">true</live>
+    <format>Controller: %s</format>
+    <halign>center</halign>
+  </text>
+
   <!-- ── Backend status (key "feels broken" fix) + ATC status ────── -->
   <text>
     <property>/ai-atc/backend</property>
@@ -45,6 +53,44 @@
     <format>Traffic: %s</format>
     <halign>left</halign>
   </text>
+
+  <!-- ── Interaction mode (normal / student / checkride) ─────────── -->
+  <!-- Each button writes /ai-atc/mode via aiatc.set_mode("..."); the sidecar
+       reads it to add coaching (student) or readback-prompt (checkride) nuance. -->
+  <group>
+    <layout>hbox</layout>
+    <default-padding type="int">4</default-padding>
+    <text><label>Mode:</label></text>
+    <button>
+      <legend>Normal</legend>
+      <pref-width type="int">75</pref-width>
+      <binding>
+        <command>nasal</command>
+        <script>aiatc.set_mode("normal");</script>
+      </binding>
+    </button>
+    <button>
+      <legend>Student</legend>
+      <pref-width type="int">75</pref-width>
+      <binding>
+        <command>nasal</command>
+        <script>aiatc.set_mode("student");</script>
+      </binding>
+    </button>
+    <button>
+      <legend>Checkride</legend>
+      <pref-width type="int">85</pref-width>
+      <binding>
+        <command>nasal</command>
+        <script>aiatc.set_mode("checkride");</script>
+      </binding>
+    </button>
+    <text>
+      <property>/ai-atc/mode</property>
+      <live type="bool">true</live>
+      <format>  (%s)</format>
+    </text>
+  </group>
 
   <!-- ── Frequencies ─────────────────────────────────────────────── -->
   <group>

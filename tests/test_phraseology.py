@@ -369,3 +369,91 @@ def test_build_prompt_includes_type_guidance_for_emergency() -> None:
     prompt = _build_prompt(c)
     assert _TYPE_GUIDANCE["mayday"] in prompt
     assert "aircraft type" not in prompt
+
+
+# ---------------------------------------------------------------------------
+# Phase 4: persona / mood / session context in the online prompt
+# ---------------------------------------------------------------------------
+
+
+def test_build_prompt_includes_persona_mood_context_when_provided() -> None:
+    """When persona/mood/context are supplied, they appear in the prompt."""
+    from sidecar.personality import ControllerPersona
+    from sidecar.phraseology import _build_prompt
+
+    c = Clearance(callsign="UAL1", clearance_type="taxi", active_runway="28R")
+    persona = ControllerPersona(name="Dana Whitfield", style="calm and methodical")
+    prompt = _build_prompt(
+        c,
+        context="UAL1: taxi -> UAL1, taxi to runway 28R.",
+        persona=persona,
+        mood="brisk",
+    )
+    assert "Controller: Dana Whitfield, calm and methodical." in prompt
+    assert "Mood: brisk." in prompt
+    assert "Session so far:" in prompt
+    assert "UAL1: taxi ->" in prompt
+
+
+def test_build_prompt_omits_persona_mood_context_by_default() -> None:
+    """Without the new kwargs, none of the Phase 4 lines appear (no regression)."""
+    from sidecar.phraseology import _build_prompt
+
+    c = Clearance(callsign="UAL1", clearance_type="taxi", active_runway="28R")
+    prompt = _build_prompt(c)
+    assert "Controller:" not in prompt
+    assert "Mood:" not in prompt
+    assert "Session so far:" not in prompt
+
+
+def test_build_prompt_default_is_byte_identical_to_explicit_empty() -> None:
+    """Passing empty defaults must reproduce the legacy prompt byte-for-byte."""
+    from sidecar.phraseology import _build_prompt
+
+    c = Clearance(
+        callsign="UAL1",
+        clearance_type="taxi",
+        taxi_route=["A", "B"],
+        active_runway="28R",
+        hold_short="28R",
+        aircraft_type="c172p",
+    )
+    assert _build_prompt(c) == _build_prompt(c, context="", persona=None, mood="")
+
+
+def test_phrase_online_forwards_persona_mood_context_to_prompt() -> None:
+    """phrase_online forwards the new kwargs into the prompt sent to the client."""
+    from sidecar.personality import ControllerPersona
+
+    captured: dict[str, str] = {}
+
+    class _CapturingClient:
+        def generate(self, prompt: str, schema: type, *, model: str | None = None) -> Any:
+            captured["prompt"] = prompt
+            return PhraseResult(text="ok")
+
+    c = Clearance(callsign="UAL1", clearance_type="taxi", active_runway="28R")
+    persona = ControllerPersona(name="Hiroshi Tanaka", style="terse but precise")
+    out = phrase_online(
+        c,
+        _CapturingClient(),  # type: ignore[arg-type]
+        context="N12: taxi -> N12, taxi to runway 1.",
+        persona=persona,
+        mood="weary",
+    )
+    assert out == "ok"
+    assert "Hiroshi Tanaka" in captured["prompt"]
+    assert "Mood: weary." in captured["prompt"]
+    assert "N12: taxi ->" in captured["prompt"]
+
+
+def test_phrase_offline_relief_handoff_includes_remarks() -> None:
+    """The relief-handoff offline template voices the briefing carried in remarks."""
+    c = Clearance(
+        callsign="Position",
+        clearance_type="relief_handoff",
+        remarks="This is Dana Whitfield taking over the position.",
+    )
+    out = phrase_offline(c)
+    assert out.startswith("Position, position relief in progress")
+    assert "This is Dana Whitfield taking over the position." in out

@@ -26,7 +26,7 @@ import sys
 import time
 from collections.abc import Callable
 
-from sidecar import metar, parser_ai, phraseology, routing
+from sidecar import metar, parser_ai, personality, phraseology, routing
 from sidecar.airport_picture import (
     AirportPicture,
     Frequencies,
@@ -39,6 +39,7 @@ from sidecar.fg_bridge import BridgeError, FGTelnetBridge
 from sidecar.gemini_client import GeminiClient
 from sidecar.phraseology import Clearance
 from sidecar.runway_selection import build_taxi_clearance
+from sidecar.session_log import SessionMemory
 from sidecar.tts import TTS
 
 _log = logging.getLogger(__name__)
@@ -59,6 +60,14 @@ AIRCRAFT_ID = "/sim/aircraft-id"
 # --- diversion: nearest-airport contract (Nasal publishes, sidecar reads) ----
 NEAREST_AIRPORT_ICAO = "/ai-atc/nearest-airport/icao"
 NEAREST_AIRPORT_NAME = "/ai-atc/nearest-airport/name"
+
+# --- Phase 4: personality / session memory / modes --------------------------
+# Nasal publishes MODE + LOCAL_HOUR; sidecar publishes CONTROLLER_NAME.
+MODE = "/ai-atc/mode"  # normal | student | checkride (default normal)
+LOCAL_HOUR = "/ai-atc/local-hour"  # int local hour (0-23); default neutral 12
+CONTROLLER_NAME = "/ai-atc/controller/name"  # sidecar writes the persona name
+# Stable seed for the persona created at startup (before any callsign is known).
+_DEFAULT_PERSONA_SEED = "ai-atc-tower"
 
 # --- sidecar heartbeat / mode (Task 2) — sidecar writes, Nasal reads --------
 HEARTBEAT = "/ai-atc/sidecar/heartbeat"
@@ -359,6 +368,14 @@ class Sidecar:
         self.tts = tts
         self._groundnet_loader = groundnet_loader
         self._running = False
+        # Phase 4: a stable controller identity + bounded session memory.
+        self.persona = personality.generate_persona(_DEFAULT_PERSONA_SEED)
+        self.memory = SessionMemory()
+        # Best-effort publish so the panel can show who is working the position.
+        try:
+            self.bridge.set(CONTROLLER_NAME, self.persona.name)
+        except Exception:  # bridge may not be connected yet; republished in main()
+            _log.debug("could not publish controller name at init", exc_info=True)
 
     # ------------------------------------------------------------------
     # Airport picture: cache -> AI/code parse -> cache
@@ -511,6 +528,55 @@ class Sidecar:
             _log.warning("session log write failed", exc_info=True)
 
     # ------------------------------------------------------------------
+    # Phase 4: personality / modes / position relief
+    # ------------------------------------------------------------------
+
+    def _apply_mode_nuance(self, clearance: Clearance, mode: str) -> None:
+        """Add a student/checkride nuance to a clearance's remarks (best-effort).
+
+        ``normal`` (the default) leaves the clearance untouched so existing
+        exact-template behaviour is preserved.
+        """
+        if mode == "student":
+            extra = "Take your time, and let me know if you need anything repeated."
+        elif mode == "checkride":
+            extra = "Read back all instructions."
+        else:
+            return
+        clearance.remarks = (
+            f"{clearance.remarks} {extra}".strip() if clearance.remarks else extra
+        )
+
+    def _relief_handoff(self, callsign: str, context: str, mood: str) -> str:
+        """Regenerate the controller persona and voice a position-relief briefing.
+
+        A new persona is derived from a fresh seed, ``CONTROLLER_NAME`` is
+        republished, and a briefing built from recent session memory is voiced
+        (offline template when the model is unavailable).
+        """
+        new_seed = f"{callsign}-relief-{self.memory.count}"
+        self.persona = personality.generate_persona(new_seed)
+        try:
+            self.bridge.set(CONTROLLER_NAME, self.persona.name)
+        except Exception:  # republish is best-effort
+            _log.debug("could not republish controller name", exc_info=True)
+        remarks = f"This is {self.persona.name} taking over the position."
+        if context:
+            remarks += " Recent activity:\n" + context
+        clearance = Clearance(
+            callsign=callsign,
+            clearance_type="relief_handoff",
+            remarks=remarks,
+        )
+        return phraseology.phrase_online(
+            clearance,
+            self.client,
+            context=context,
+            persona=self.persona,
+            mood=mood,
+        )
+
+    # ------------------------------------------------------------------
     # One request
     # ------------------------------------------------------------------
 
@@ -524,37 +590,63 @@ class Sidecar:
             return
 
         self.bridge.set(STATUS, "processing")
+        aircraft_type = ""
         try:
             icao = (self.bridge.get(AIRPORT_ID) or "").strip()
             lat = _to_float(self.bridge.get(POS_LAT))
             lon = _to_float(self.bridge.get(POS_LON))
-            groundnet_xml = self._groundnet_loader(icao)
-            picture = (
-                self.get_airport_picture(icao, groundnet_xml)
-                if groundnet_xml
-                else None
+
+            # Phase 4 personality context (best-effort; never breaks the reply).
+            mode = (self.bridge.get(MODE) or "normal").strip().lower() or "normal"
+            try:
+                local_hour = int(float(self.bridge.get(LOCAL_HOUR) or 12))
+            except (TypeError, ValueError):
+                local_hour = 12
+            mood = personality.mood_for(
+                self.memory.count,
+                quiet_night=personality.is_quiet_night(local_hour),
             )
-            # Merge any runway/frequency data Nasal has published into the picture
-            if picture is not None:
-                picture = merge_airport_mailbox(picture, self.bridge)
-            clearance = self._build_clearance(req_type, callsign, picture)
-            text = phraseology.phrase_online(clearance, self.client)
-            # Mode B: best-effort live traffic sequencing for taxi requests.
-            # Wrapped so any traffic failure NEVER breaks the clearance response.
-            if picture is not None and req_type == "taxi":
-                try:
-                    from sidecar.runway_selection import (  # noqa: PLC0415
-                        start_node_for_position,
-                    )
-                    user_node = start_node_for_position(picture, lat, lon)
-                    snapshots = read_ai_traffic(self.bridge, picture)
-                    count, summary = compute_traffic_queue(
-                        snapshots, user_node, picture
-                    )
-                    self.bridge.set(TRAFFIC_COUNT, count)
-                    self.bridge.set(TRAFFIC_SUMMARY, summary)
-                except Exception:
-                    _log.debug("traffic sequencing failed", exc_info=True)
+            context = self.memory.recent_context()
+
+            if req_type == "relief_handoff":
+                picture = None
+                text = self._relief_handoff(callsign, context, mood)
+            else:
+                groundnet_xml = self._groundnet_loader(icao)
+                picture = (
+                    self.get_airport_picture(icao, groundnet_xml)
+                    if groundnet_xml
+                    else None
+                )
+                # Merge runway/frequency data Nasal has published into the picture
+                if picture is not None:
+                    picture = merge_airport_mailbox(picture, self.bridge)
+                clearance = self._build_clearance(req_type, callsign, picture)
+                self._apply_mode_nuance(clearance, mode)
+                aircraft_type = clearance.aircraft_type
+                text = phraseology.phrase_online(
+                    clearance,
+                    self.client,
+                    context=context,
+                    persona=self.persona,
+                    mood=mood,
+                )
+                # Mode B: best-effort live traffic sequencing for taxi requests.
+                # Wrapped so any traffic failure NEVER breaks the clearance reply.
+                if picture is not None and req_type == "taxi":
+                    try:
+                        from sidecar.runway_selection import (  # noqa: PLC0415
+                            start_node_for_position,
+                        )
+                        user_node = start_node_for_position(picture, lat, lon)
+                        snapshots = read_ai_traffic(self.bridge, picture)
+                        count, summary = compute_traffic_queue(
+                            snapshots, user_node, picture
+                        )
+                        self.bridge.set(TRAFFIC_COUNT, count)
+                        self.bridge.set(TRAFFIC_SUMMARY, summary)
+                    except Exception:
+                        _log.debug("traffic sequencing failed", exc_info=True)
         except Exception:
             _log.exception("failed to handle request")
             self.bridge.set(RESP_TEXT, "Stand by — unable to process that request.")
@@ -563,6 +655,12 @@ class Sidecar:
             self.bridge.set(REQ_TRIGGER, 0)
             return
 
+        # Remember this interaction so later transmissions have continuity.
+        try:
+            self.memory.remember(req_type, callsign, text)
+        except Exception:  # session memory is best-effort
+            _log.debug("session memory update failed", exc_info=True)
+
         self._append_session_record(
             airport_id=icao,
             lat=lat,
@@ -570,7 +668,7 @@ class Sidecar:
             req_type=req_type,
             callsign=callsign,
             runway=(self.bridge.get(REQ_RUNWAY) or "").strip(),
-            aircraft_type=clearance.aircraft_type,
+            aircraft_type=aircraft_type,
             picture=picture,
             response_text=text,
         )
@@ -735,6 +833,7 @@ def main() -> None:
         mode = "ai" if settings.gemini_api_key else "offline"
         sidecar.bridge.set(SIDECAR_MODE, mode)
         sidecar.bridge.set(HEARTBEAT, 0)
+        sidecar.bridge.set(CONTROLLER_NAME, sidecar.persona.name)
         sidecar.poll_loop()
     except BridgeError as exc:
         _log.error("could not start sidecar: %s", exc)
