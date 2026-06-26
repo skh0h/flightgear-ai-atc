@@ -723,6 +723,69 @@ def test_handle_trigger_taxi_writes_traffic_summary(tmp_path: Path) -> None:
     assert backend.said
 
 
+def test_handle_trigger_takeoff_appends_wake_caution_for_heavy_traffic(
+    tmp_path: Path,
+) -> None:
+    """A takeoff with a nearby heavy in /ai/models appends a wake caution to RESP_TEXT."""
+    from sidecar.main import AI_MODELS_PREFIX
+
+    pic = _synthetic_picture()
+    ai = AI_MODELS_PREFIX
+    props = {
+        AIRPORT_ID: pic.icao,
+        AIRCRAFT_ID: "c172p",  # light follower
+        REQ_TYPE: "takeoff",
+        REQ_CALLSIGN: "UAL1",
+        REQ_RUNWAY: "28L",
+        POS_LAT: "37.620",
+        POS_LON: "-122.380",
+        REQ_TRIGGER: "1",
+        # A heavy sitting next to the user, snapped to the net.
+        f"{ai}[0]/valid": "1",
+        f"{ai}[0]/callsign": "DLH9 Heavy",
+        f"{ai}[0]/position/latitude-deg": "37.6201",
+        f"{ai}[0]/position/longitude-deg": "-122.3801",
+        f"{ai}[0]/orientation/true-heading-deg": "284",
+    }
+    sidecar, bridge, backend = _make_with_picture(tmp_path, props, pic)
+    sidecar.handle_trigger()
+
+    resp = bridge.props[RESP_TEXT]
+    assert "cleared for takeoff" in resp.lower()
+    assert "wake" in resp.lower(), f"expected a wake-turbulence caution in {resp!r}"
+    assert bridge.props[RESP_READY] == 1
+    assert bridge.props[REQ_TRIGGER] == 0
+
+
+def test_handle_trigger_taxi_writes_chatter_when_traffic_present(tmp_path: Path) -> None:
+    """A taxi request with nearby AI traffic publishes one ambient chatter line."""
+    from sidecar.main import AI_MODELS_PREFIX, CHATTER
+
+    pic = _synthetic_picture()
+    ai = AI_MODELS_PREFIX
+    props = {
+        AIRPORT_ID: pic.icao,
+        REQ_TYPE: "taxi",
+        REQ_CALLSIGN: "UAL9",
+        REQ_RUNWAY: "",
+        POS_LAT: "37.620",
+        POS_LON: "-122.380",
+        REQ_TRIGGER: "1",
+        f"{ai}[0]/valid": "1",
+        f"{ai}[0]/callsign": "DLH123",
+        f"{ai}[0]/position/latitude-deg": "37.6249",
+        f"{ai}[0]/position/longitude-deg": "-122.3849",
+        f"{ai}[0]/orientation/true-heading-deg": "284",
+    }
+    sidecar, bridge, backend = _make_with_picture(tmp_path, props, pic)
+    sidecar.handle_trigger()
+
+    assert bridge.props.get(CHATTER, ""), "expected a non-empty ambient chatter line"
+    # Clearance reply is unaffected.
+    assert bridge.props[RESP_READY] == 1
+    assert bridge.props[REQ_TRIGGER] == 0
+
+
 def test_handle_trigger_traffic_failure_still_writes_response(
     tmp_path: Path, monkeypatch: Any
 ) -> None:

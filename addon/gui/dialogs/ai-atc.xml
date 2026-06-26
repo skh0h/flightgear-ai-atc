@@ -53,6 +53,13 @@
     <format>Traffic: %s</format>
     <halign>left</halign>
   </text>
+  <!-- Live ambient-chatter line published by the sidecar to /ai-atc/chatter. -->
+  <text>
+    <property>/ai-atc/chatter</property>
+    <live type="bool">true</live>
+    <format>Chatter: %s</format>
+    <halign>left</halign>
+  </text>
 
   <!-- ── Interaction mode (normal / student / checkride) ─────────── -->
   <!-- Each button writes /ai-atc/mode via aiatc.set_mode("..."); the sidecar
@@ -214,6 +221,14 @@
         <script>aiatc.request("takeoff");</script>
       </binding>
     </button>
+    <button>
+      <legend>Intersection Dep</legend>
+      <pref-width type="int">120</pref-width>
+      <binding>
+        <command>nasal</command>
+        <script>aiatc.request("intersection_departure");</script>
+      </binding>
+    </button>
   </group>
 
   <!-- ── Arrival buttons ─────────────────────────────────────────── -->
@@ -244,6 +259,14 @@
       <binding>
         <command>nasal</command>
         <script>aiatc.request("airfield_in_sight");</script>
+      </binding>
+    </button>
+    <button>
+      <legend>LAHSO</legend>
+      <pref-width type="int">70</pref-width>
+      <binding>
+        <command>nasal</command>
+        <script>aiatc.request("lahso");</script>
       </binding>
     </button>
     <button>
