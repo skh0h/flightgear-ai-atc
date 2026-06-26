@@ -17,7 +17,7 @@ from __future__ import annotations
 import heapq
 import math
 
-from sidecar.airport_picture import AirportPicture
+from sidecar.airport_picture import AirportPicture, Runway
 
 _EARTH_RADIUS_M = 6371000.0
 
@@ -44,6 +44,31 @@ def _coord_map(picture: AirportPicture) -> dict[int, tuple[float, float]]:
     return coords
 
 
+def nearest_node_with_distance(
+    picture: AirportPicture,
+    lat: float,
+    lon: float,
+    *,
+    require_on_runway: bool | None = None,
+) -> tuple[int | None, float]:
+    """Nearest taxi node to ``(lat, lon)`` and its great-circle distance (m).
+
+    ``require_on_runway`` filters candidates: ``True`` for runway nodes only,
+    ``False`` for non-runway nodes only, ``None`` (default) for any node.
+    Returns ``(None, math.inf)`` if no candidate qualifies.
+    """
+    best_index: int | None = None
+    best_dist = math.inf
+    for node in picture.nodes:
+        if require_on_runway is not None and node.on_runway != require_on_runway:
+            continue
+        dist = haversine_m(lat, lon, node.lat, node.lon)
+        if dist < best_dist:
+            best_dist = dist
+            best_index = node.index
+    return best_index, best_dist
+
+
 def nearest_node(
     picture: AirportPicture,
     lat: float,
@@ -55,18 +80,21 @@ def nearest_node(
 
     ``require_on_runway`` filters candidates: ``True`` for runway nodes only,
     ``False`` for non-runway nodes only, ``None`` (default) for any node.
-    Returns ``None`` if no candidate qualifies.
+    Returns ``None`` if no candidate qualifies.  Thin wrapper over
+    :func:`nearest_node_with_distance`.
     """
-    best_index: int | None = None
-    best_dist = math.inf
-    for node in picture.nodes:
-        if require_on_runway is not None and node.on_runway != require_on_runway:
-            continue
-        dist = haversine_m(lat, lon, node.lat, node.lon)
-        if dist < best_dist:
-            best_dist = dist
-            best_index = node.index
-    return best_index
+    index, _dist = nearest_node_with_distance(
+        picture, lat, lon, require_on_runway=require_on_runway
+    )
+    return index
+
+
+def active_runways(picture: AirportPicture) -> list[Runway]:
+    """Return the runway ends flagged active for departures (Mode A).
+
+    Empty when none are flagged; callers fall back to ``picture.runways``.
+    """
+    return [r for r in picture.runways if r.active]
 
 
 def nearest_node_to_parking(picture: AirportPicture, parking_id: int) -> int | None:

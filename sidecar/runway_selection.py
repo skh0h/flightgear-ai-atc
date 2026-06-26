@@ -77,6 +77,11 @@ def select_departure_runway(
     if not picture.runways:
         return None
 
+    # Mode A: restrict to active runways when ANY are flagged active; otherwise
+    # consider all runways.  This is a no-op when nothing is marked active, so
+    # existing behaviour (and replay goldens) is preserved.
+    candidates = [r for r in picture.runways if r.active] or picture.runways
+
     use_wind = (
         wind_dir is not None
         and wind_kt is not None
@@ -93,7 +98,7 @@ def select_departure_runway(
             num = 999
         return -float(num)  # lower number → higher score → selected first
 
-    return max(picture.runways, key=score)
+    return max(candidates, key=score)
 
 
 # ---------------------------------------------------------------------------

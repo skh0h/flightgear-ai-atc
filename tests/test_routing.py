@@ -6,9 +6,12 @@ from pathlib import Path
 
 from sidecar.airport_picture import AirportPicture, Node, ParkingSpot, Segment, build_taxi_graph
 from sidecar.parser_code import parse_groundnet
+from sidecar.airport_picture import Runway
 from sidecar.routing import (
+    active_runways,
     find_route,
     nearest_node,
+    nearest_node_with_distance,
     route_coverage,
     route_to_instructions,
     taxiways_for_clearance,
@@ -239,3 +242,35 @@ def test_taxiways_for_clearance_ratio_gate() -> None:
 def test_taxiways_for_clearance_empty_route() -> None:
     pic = _dense_picture()
     assert taxiways_for_clearance([], pic) == []
+
+
+# ---------------------------------------------------------------------------
+# Mode B helper: nearest_node_with_distance + Mode A helper: active_runways
+# ---------------------------------------------------------------------------
+
+
+def test_nearest_node_with_distance_matches_nearest_node() -> None:
+    nodes = [Node(index=1, lat=0.0, lon=0.0), Node(index=2, lat=0.0, lon=0.01)]
+    pic = _picture(nodes, [Segment(begin=1, end=2)])
+    idx, dist = nearest_node_with_distance(pic, 0.0, 0.0001)
+    assert idx == 1
+    assert idx == nearest_node(pic, 0.0, 0.0001)
+    assert dist > 0.0
+
+
+def test_nearest_node_with_distance_no_candidate_returns_inf() -> None:
+    import math
+
+    pic = _picture([Node(index=1, lat=0.0, lon=0.0)], [])
+    # No on-runway nodes → require_on_runway=True yields (None, inf).
+    idx, dist = nearest_node_with_distance(pic, 0.0, 0.0, require_on_runway=True)
+    assert idx is None
+    assert math.isinf(dist)
+
+
+def test_active_runways_filters_to_active_only() -> None:
+    pic = _picture([Node(index=1, lat=0.0, lon=0.0)], [])
+    pic = pic.model_copy(
+        update={"runways": [Runway(id="28L", active=True), Runway(id="10R")]}
+    )
+    assert [r.id for r in active_runways(pic)] == ["28L"]
