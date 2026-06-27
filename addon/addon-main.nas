@@ -270,6 +270,36 @@ var _PHASE_BUTTONS = {
     ]
 };
 
+# ---------------------------------------------------------------------------
+# Stage 3 — per-phase color encoding for the "── Requests ──" header label.
+# Values are 0.0–1.0 RGB floats derived from the plan's hex palette:
+#   preflight/clearance  → Blue   #3a6ea5
+#   pushback/taxi_out    → Amber  #b8860b
+#   takeoff/departure    → Orange #cc5500
+#   climb/cruise/descent → Green  #2e7d32
+#   arrival/approach     → Purple #6a1f8a
+#   landing/taxi_in      → Teal   #00695c
+#   parked               → DkGrey #546e7a
+# Any unmapped phase falls back to _phase_color_default (dark grey).
+# ---------------------------------------------------------------------------
+var _phase_color = {
+    "preflight":  {r: 0.227, g: 0.431, b: 0.647},
+    "clearance":  {r: 0.227, g: 0.431, b: 0.647},
+    "pushback":   {r: 0.722, g: 0.525, b: 0.043},
+    "taxi_out":   {r: 0.722, g: 0.525, b: 0.043},
+    "takeoff":    {r: 0.800, g: 0.333, b: 0.000},
+    "departure":  {r: 0.800, g: 0.333, b: 0.000},
+    "climb":      {r: 0.180, g: 0.490, b: 0.196},
+    "cruise":     {r: 0.180, g: 0.490, b: 0.196},
+    "descent":    {r: 0.180, g: 0.490, b: 0.196},
+    "arrival":    {r: 0.416, g: 0.122, b: 0.541},
+    "approach":   {r: 0.416, g: 0.122, b: 0.541},
+    "landing":    {r: 0.000, g: 0.412, b: 0.361},
+    "taxi_in":    {r: 0.000, g: 0.412, b: 0.361},
+    "parked":     {r: 0.329, g: 0.431, b: 0.478},
+};
+var _phase_color_default = {r: 0.329, g: 0.431, b: 0.478};
+
 # Populate the <group name="phase-buttons"> in the dialog property tree for
 # the given phase. FG stores the dialog property tree at
 # /sim/gui/dialogs/ai-atc/ after the first dialog-show; dialog-show then
@@ -309,6 +339,21 @@ var _build_phase_buttons = func(phase) {
         bd.getNode("script",  1).setValue('aiatc.request("' ~ bdata.type ~ '");');
         col = col + 1;
         if (col >= 2) { col = 0; row = row + 1; }
+    }
+    # Stage 3: apply the per-phase color to the <text name="phase-label"> header.
+    # The color node is written into the dialog property tree here, before
+    # dialog-show, so FG reads the updated value when it rebuilds PUI widgets.
+    var clr = _phase_color[phase];
+    if (clr == nil) clr = _phase_color_default;
+    foreach (var t; dlg.getChildren("text")) {
+        var nm = t.getNode("name");
+        if (nm != nil and nm.getValue() == "phase-label") {
+            var col_node = t.getNode("color", 1);
+            col_node.getNode("red",   1).setValue(clr.r);
+            col_node.getNode("green", 1).setValue(clr.g);
+            col_node.getNode("blue",  1).setValue(clr.b);
+            break;
+        }
     }
 };
 

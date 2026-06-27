@@ -219,6 +219,7 @@
        in addon-main.nas closes then reopens the dialog (Option A rebuild)
        so FG rebuilds PUI widgets from the updated property tree. -->
   <text>
+    <name>phase-label</name>
     <label>── Requests ──────────────────────────────────────────────</label>
     <halign>left</halign>
   </text>
