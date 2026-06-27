@@ -1,5 +1,9 @@
 <?xml version="1.0" encoding="UTF-8"?>
-<!-- AI ATC dialog: backend status, frequencies, inputs, grouped request buttons, transcript. -->
+<!-- AI ATC dialog: state-aware compact 2-column panel.
+     Phase-specific request buttons are populated dynamically by
+     _build_phase_buttons() in addon-main.nas before each dialog-show;
+     the empty <group name="phase-buttons"> is the insertion point.
+     Emergency buttons are statically defined here and always visible. -->
 <PropertyList>
   <name>ai-atc</name>
   <layout>vbox</layout>
@@ -67,8 +71,7 @@
     <format>Chatter: %s</format>
     <halign>left</halign>
   </text>
-  <!-- Live airspace class + advisory published by the add-on's publish_airspace().
-       The sidecar also reads these for the airspace_check request. -->
+  <!-- Live airspace class + advisory published by the add-on's publish_airspace(). -->
   <text>
     <property>/ai-atc/airspace/class</property>
     <live type="bool">true</live>
@@ -81,9 +84,7 @@
     <format>%s</format>
     <halign>left</halign>
   </text>
-  <!-- Live guardrail validation warning published by the sidecar to
-       /ai-atc/guardrail. Usually blank; non-empty means the sidecar flagged an
-       unsafe/ungrounded phraseology issue for this exchange. -->
+  <!-- Live guardrail validation warning published by the sidecar. -->
   <text>
     <property>/ai-atc/guardrail</property>
     <live type="bool">true</live>
@@ -92,8 +93,6 @@
   </text>
 
   <!-- ── Interaction mode (normal / student / checkride) ─────────── -->
-  <!-- Each button writes /ai-atc/mode via aiatc.set_mode("..."); the sidecar
-       reads it to add coaching (student) or readback-prompt (checkride) nuance. -->
   <group>
     <layout>hbox</layout>
     <default-padding type="int">4</default-padding>
@@ -161,13 +160,6 @@
   </group>
 
   <!-- ── Active runways (Mode A) ─────────────────────────────────── -->
-  <!-- Static PUI XML cannot generate a checkbox per dynamic runway slot, so we
-       expose the first two runway slots (the common single/parallel-runway
-       case). Each checkbox is bound live to /ai-atc/airport/runway[i]/active and
-       its <binding> re-normalises the toggled state to "1"/"0" via
-       aiatc.set_runway_active(i, ...). The adjacent live <text> shows the actual
-       runway id for that slot. Any further runway slots default to active "1"
-       (published by publish_airport_data) and are simply not toggleable here. -->
   <group>
     <layout>hbox</layout>
     <default-padding type="int">4</default-padding>
@@ -221,345 +213,91 @@
     </input>
   </group>
 
-  <!-- ── Departure buttons ───────────────────────────────────────── -->
+  <!-- ── Phase-aware request buttons (2-column, populated by Nasal) ─ -->
+  <!-- _build_phase_buttons(phase) in addon-main.nas writes <button> child
+       nodes here before each dialog-show. On phase change the setlistener
+       in addon-main.nas closes then reopens the dialog (Option A rebuild)
+       so FG rebuilds PUI widgets from the updated property tree. -->
+  <text>
+    <label>── Requests ──────────────────────────────────────────────</label>
+    <halign>left</halign>
+  </text>
   <group>
-    <layout>hbox</layout>
+    <name>phase-buttons</name>
+    <layout>table</layout>
     <default-padding type="int">4</default-padding>
-    <halign>center</halign>
-    <text><label>Departure:</label></text>
-    <button>
-      <legend>IFR Clearance</legend>
-      <pref-width type="int">110</pref-width>
-      <binding>
-        <command>nasal</command>
-        <script>aiatc.request("ifr_clearance");</script>
-      </binding>
-    </button>
-    <button>
-      <legend>Pushback</legend>
-      <pref-width type="int">80</pref-width>
-      <binding>
-        <command>nasal</command>
-        <script>aiatc.request("pushback");</script>
-      </binding>
-    </button>
-    <button>
-      <legend>Taxi</legend>
-      <pref-width type="int">60</pref-width>
-      <binding>
-        <command>nasal</command>
-        <script>aiatc.request("taxi");</script>
-      </binding>
-    </button>
-    <button>
-      <legend>Takeoff</legend>
-      <pref-width type="int">70</pref-width>
-      <binding>
-        <command>nasal</command>
-        <script>aiatc.request("takeoff");</script>
-      </binding>
-    </button>
-    <button>
-      <legend>Intersection Dep</legend>
-      <pref-width type="int">120</pref-width>
-      <binding>
-        <command>nasal</command>
-        <script>aiatc.request("intersection_departure");</script>
-      </binding>
-    </button>
   </group>
 
-  <!-- ── Arrival buttons ─────────────────────────────────────────── -->
+  <!-- ── Emergency buttons (always visible in every phase) ───────── -->
+  <!-- Mayday, Pan-Pan, Gear Emergency, Min Fuel, Diversion, Go-Around,
+       Sq 7500, Sq 7600, Sq 7700 — never filtered by phase.
+       2-column table layout; 5 rows for 9 buttons. -->
+  <text>
+    <label>── Emergency ─────────────────────────────────────────────</label>
+    <halign>left</halign>
+  </text>
   <group>
-    <layout>hbox</layout>
+    <name>emergency-buttons</name>
+    <layout>table</layout>
     <default-padding type="int">4</default-padding>
-    <halign>center</halign>
-    <text><label>Arrival:  </label></text>
-    <button>
-      <legend>Approach</legend>
-      <pref-width type="int">75</pref-width>
-      <binding>
-        <command>nasal</command>
-        <script>aiatc.request("approach");</script>
-      </binding>
-    </button>
-    <button>
-      <legend>ILS</legend>
-      <pref-width type="int">45</pref-width>
-      <binding>
-        <command>nasal</command>
-        <script>aiatc.request("ils");</script>
-      </binding>
-    </button>
-    <button>
-      <legend>Field in Sight</legend>
-      <pref-width type="int">100</pref-width>
-      <binding>
-        <command>nasal</command>
-        <script>aiatc.request("airfield_in_sight");</script>
-      </binding>
-    </button>
-    <button>
-      <legend>LAHSO</legend>
-      <pref-width type="int">70</pref-width>
-      <binding>
-        <command>nasal</command>
-        <script>aiatc.request("lahso");</script>
-      </binding>
-    </button>
-    <button>
-      <legend>Radio Check</legend>
-      <pref-width type="int">90</pref-width>
-      <binding>
-        <command>nasal</command>
-        <script>aiatc.request("radio_check");</script>
-      </binding>
-    </button>
-  </group>
-
-  <!-- ── Arrival clearance / flow buttons ────────────────────────── -->
-  <!-- Phase-aware request tokens consumed by the sidecar:
-       arrival_clearance, holding, expect_approach, flow_control. -->
-  <group>
-    <layout>hbox</layout>
-    <default-padding type="int">4</default-padding>
-    <halign>center</halign>
-    <text><label>          </label></text>
-    <button>
-      <legend>Arrival Clrnc</legend>
-      <pref-width type="int">110</pref-width>
-      <binding>
-        <command>nasal</command>
-        <script>aiatc.request("arrival_clearance");</script>
-      </binding>
-    </button>
-    <button>
-      <legend>Holding</legend>
-      <pref-width type="int">75</pref-width>
-      <binding>
-        <command>nasal</command>
-        <script>aiatc.request("holding");</script>
-      </binding>
-    </button>
-    <button>
-      <legend>Expect Apch</legend>
-      <pref-width type="int">100</pref-width>
-      <binding>
-        <command>nasal</command>
-        <script>aiatc.request("expect_approach");</script>
-      </binding>
-    </button>
-    <button>
-      <legend>Flow Control</legend>
-      <pref-width type="int">100</pref-width>
-      <binding>
-        <command>nasal</command>
-        <script>aiatc.request("flow_control");</script>
-      </binding>
-    </button>
-  </group>
-
-  <!-- ── Emergency / abnormal buttons ────────────────────────────── -->
-  <!-- Split across two hbox rows so the nine request buttons fit the dialog
-       width. Each button fires aiatc.request("<token>") exactly like the
-       Departure/Arrival groups; the sidecar maps the token to phraseology. -->
-  <group>
-    <layout>hbox</layout>
-    <default-padding type="int">4</default-padding>
-    <halign>center</halign>
-    <text><label>Emergency:</label></text>
+    <!-- Row 0 -->
     <button>
       <legend>Mayday</legend>
-      <pref-width type="int">70</pref-width>
-      <binding>
-        <command>nasal</command>
-        <script>aiatc.request("mayday");</script>
-      </binding>
+      <row type="int">0</row><col type="int">0</col>
+      <pref-width type="int">185</pref-width>
+      <binding><command>nasal</command><script>aiatc.request("mayday");</script></binding>
     </button>
     <button>
       <legend>Pan-Pan</legend>
-      <pref-width type="int">70</pref-width>
-      <binding>
-        <command>nasal</command>
-        <script>aiatc.request("pan_pan");</script>
-      </binding>
+      <row type="int">0</row><col type="int">1</col>
+      <pref-width type="int">185</pref-width>
+      <binding><command>nasal</command><script>aiatc.request("pan_pan");</script></binding>
     </button>
+    <!-- Row 1 -->
     <button>
       <legend>Gear Emergency</legend>
-      <pref-width type="int">115</pref-width>
-      <binding>
-        <command>nasal</command>
-        <script>aiatc.request("gear_emergency");</script>
-      </binding>
+      <row type="int">1</row><col type="int">0</col>
+      <pref-width type="int">185</pref-width>
+      <binding><command>nasal</command><script>aiatc.request("gear_emergency");</script></binding>
     </button>
     <button>
       <legend>Min Fuel</legend>
-      <pref-width type="int">75</pref-width>
-      <binding>
-        <command>nasal</command>
-        <script>aiatc.request("min_fuel");</script>
-      </binding>
+      <row type="int">1</row><col type="int">1</col>
+      <pref-width type="int">185</pref-width>
+      <binding><command>nasal</command><script>aiatc.request("min_fuel");</script></binding>
     </button>
+    <!-- Row 2 -->
     <button>
       <legend>Diversion</legend>
-      <pref-width type="int">85</pref-width>
-      <binding>
-        <command>nasal</command>
-        <script>aiatc.request("diversion");</script>
-      </binding>
+      <row type="int">2</row><col type="int">0</col>
+      <pref-width type="int">185</pref-width>
+      <binding><command>nasal</command><script>aiatc.request("diversion");</script></binding>
     </button>
-  </group>
-  <group>
-    <layout>hbox</layout>
-    <default-padding type="int">4</default-padding>
-    <halign>center</halign>
-    <text><label>          </label></text>
     <button>
       <legend>Go-Around</legend>
-      <pref-width type="int">85</pref-width>
-      <binding>
-        <command>nasal</command>
-        <script>aiatc.request("go_around");</script>
-      </binding>
+      <row type="int">2</row><col type="int">1</col>
+      <pref-width type="int">185</pref-width>
+      <binding><command>nasal</command><script>aiatc.request("go_around");</script></binding>
     </button>
+    <!-- Row 3 -->
     <button>
       <legend>Sq 7500</legend>
-      <pref-width type="int">70</pref-width>
-      <binding>
-        <command>nasal</command>
-        <script>aiatc.request("squawk_7500");</script>
-      </binding>
+      <row type="int">3</row><col type="int">0</col>
+      <pref-width type="int">185</pref-width>
+      <binding><command>nasal</command><script>aiatc.request("squawk_7500");</script></binding>
     </button>
     <button>
       <legend>Sq 7600</legend>
-      <pref-width type="int">70</pref-width>
-      <binding>
-        <command>nasal</command>
-        <script>aiatc.request("squawk_7600");</script>
-      </binding>
+      <row type="int">3</row><col type="int">1</col>
+      <pref-width type="int">185</pref-width>
+      <binding><command>nasal</command><script>aiatc.request("squawk_7600");</script></binding>
     </button>
+    <!-- Row 4 -->
     <button>
       <legend>Sq 7700</legend>
-      <pref-width type="int">70</pref-width>
-      <binding>
-        <command>nasal</command>
-        <script>aiatc.request("squawk_7700");</script>
-      </binding>
-    </button>
-  </group>
-
-  <!-- ── Briefings / airspace info ───────────────────────────────── -->
-  <!-- Request tokens consumed by the sidecar: simbrief, fss_briefing, ctaf,
-       airspace_check. Each fires aiatc.request("<token>") exactly like the
-       Departure/Arrival groups; the sidecar maps the token to phraseology. -->
-  <group>
-    <layout>hbox</layout>
-    <default-padding type="int">4</default-padding>
-    <halign>center</halign>
-    <text><label>Briefings:</label></text>
-    <button>
-      <legend>SimBrief</legend>
-      <pref-width type="int">90</pref-width>
-      <binding>
-        <command>nasal</command>
-        <script>aiatc.request("simbrief");</script>
-      </binding>
-    </button>
-    <button>
-      <legend>FSS Brief</legend>
-      <pref-width type="int">90</pref-width>
-      <binding>
-        <command>nasal</command>
-        <script>aiatc.request("fss_briefing");</script>
-      </binding>
-    </button>
-    <button>
-      <legend>CTAF</legend>
-      <pref-width type="int">70</pref-width>
-      <binding>
-        <command>nasal</command>
-        <script>aiatc.request("ctaf");</script>
-      </binding>
-    </button>
-    <button>
-      <legend>Airspace</legend>
-      <pref-width type="int">90</pref-width>
-      <binding>
-        <command>nasal</command>
-        <script>aiatc.request("airspace_check");</script>
-      </binding>
-    </button>
-  </group>
-
-  <!-- ── Weather requests ────────────────────────────────────────── -->
-  <!-- Request tokens consumed by the sidecar: windshear, pirep,
-       weather_deviation. Each fires aiatc.request("<token>") exactly like the
-       Departure/Arrival groups; the sidecar maps the token to phraseology. -->
-  <group>
-    <layout>hbox</layout>
-    <default-padding type="int">4</default-padding>
-    <halign>center</halign>
-    <text><label>Weather:  </label></text>
-    <button>
-      <legend>Windshear</legend>
-      <pref-width type="int">95</pref-width>
-      <binding>
-        <command>nasal</command>
-        <script>aiatc.request("windshear");</script>
-      </binding>
-    </button>
-    <button>
-      <legend>PIREP</legend>
-      <pref-width type="int">70</pref-width>
-      <binding>
-        <command>nasal</command>
-        <script>aiatc.request("pirep");</script>
-      </binding>
-    </button>
-    <button>
-      <legend>Wx Deviation</legend>
-      <pref-width type="int">110</pref-width>
-      <binding>
-        <command>nasal</command>
-        <script>aiatc.request("weather_deviation");</script>
-      </binding>
-    </button>
-  </group>
-
-  <!-- ── Training: scenario / kneeboard / career ─────────────────── -->
-  <!-- Request tokens consumed by the sidecar: scenario, kneeboard, career.
-       Each fires aiatc.request("<token>") exactly like the Departure/Arrival
-       groups; the sidecar maps the token to phraseology and, for "kneeboard",
-       also publishes the rendered kneeboard text to /ai-atc/kneeboard (shown
-       live below the transcript). -->
-  <group>
-    <layout>hbox</layout>
-    <default-padding type="int">4</default-padding>
-    <halign>center</halign>
-    <text><label>Training: </label></text>
-    <button>
-      <legend>Scenario</legend>
-      <pref-width type="int">90</pref-width>
-      <binding>
-        <command>nasal</command>
-        <script>aiatc.request("scenario");</script>
-      </binding>
-    </button>
-    <button>
-      <legend>Kneeboard</legend>
-      <pref-width type="int">95</pref-width>
-      <binding>
-        <command>nasal</command>
-        <script>aiatc.request("kneeboard");</script>
-      </binding>
-    </button>
-    <button>
-      <legend>Career</legend>
-      <pref-width type="int">80</pref-width>
-      <binding>
-        <command>nasal</command>
-        <script>aiatc.request("career");</script>
-      </binding>
+      <row type="int">4</row><col type="int">0</col>
+      <pref-width type="int">185</pref-width>
+      <binding><command>nasal</command><script>aiatc.request("squawk_7700");</script></binding>
     </button>
   </group>
 
@@ -576,9 +314,6 @@
   </textbox>
 
   <!-- ── Kneeboard (live training reference) ─────────────────────── -->
-  <!-- Multi-line training reference text published by the sidecar to
-       /ai-atc/kneeboard (e.g. on a "kneeboard" / "scenario" / "career"
-       request). Editable=false so it is a read-only live display. -->
   <text>
     <label>Kneeboard:</label>
     <halign>left</halign>
@@ -594,11 +329,7 @@
     <stretch type="bool">true</stretch>
   </textbox>
 
-  <!-- ── Readback (Phase 5 push-to-talk) ─────────────────────────── -->
-  <!-- Type the readback for the latest clearance and submit it for grading.
-       The input is live-bound to /ai-atc/readback/heard; "Submit Readback"
-       fires aiatc.request("readback") (also bound to Ctrl+R via aiatc.ptt()).
-       The sidecar grades it and writes /ai-atc/readback/result, shown live. -->
+  <!-- ── Readback (manual push-to-talk; removed in Stage 4) ─────── -->
   <group>
     <layout>hbox</layout>
     <default-padding type="int">4</default-padding>
@@ -625,9 +356,6 @@
   </text>
 
   <!-- ── Language / region config ────────────────────────────────── -->
-  <!-- Writes /ai-atc/language and /ai-atc/region (read by the sidecar) via
-       aiatc.set_language("..") / aiatc.set_region(".."). The adjacent live
-       <text> shows the active values. Defaults are en/us. -->
   <group>
     <layout>hbox</layout>
     <default-padding type="int">4</default-padding>
@@ -703,5 +431,15 @@
       </binding>
     </button>
   </group>
+
+  <!-- ── Nasal open/close hooks ──────────────────────────────────── -->
+  <!-- <open>: mark dialog as open so the phase-change setlistener in
+       addon-main.nas knows to rebuild on phase transitions.
+       <close>: clear the flag when the user dismisses the dialog so
+       phase changes do not silently reopen it. -->
+  <nasal>
+    <open>setprop("/ai-atc/dialog-open", 1);</open>
+    <close>setprop("/ai-atc/dialog-open", 0);</close>
+  </nasal>
 
 </PropertyList>

@@ -15,8 +15,8 @@
     <item>
       <label>Open ATC Panel</label>
       <binding>
-        <command>dialog-show</command>
-        <dialog-name>ai-atc</dialog-name>
+        <command>nasal</command>
+        <script>aiatc.open_dialog();</script>
       </binding>
     </item>
 

@@ -148,6 +148,9 @@ var _set_defaults = func {
     # well-formed values before the user changes them.
     setprop(ROOT ~ "/language", "en");
     setprop(ROOT ~ "/region", "us");
+    # Dialog open/close tracking for the phase-change rebuild guard.
+    # Set to 1 by <nasal><open> in ai-atc.xml, cleared by <nasal><close>.
+    setprop(ROOT ~ "/dialog-open", 0);
 };
 
 # Append one line to the scrolling transcript.
@@ -172,6 +175,157 @@ var append_log = func(line) {
         }
     }
     setprop(ROOT ~ "/log", combined);
+};
+
+# ---------------------------------------------------------------------------
+# Phase-to-button mapping (Stage 2 state-aware panel).
+# Each entry is the list of primary request buttons for that flight phase.
+# Emergency buttons (Mayday, Pan-Pan, Gear Emergency, Min Fuel, Diversion,
+# Go-Around, Sq 7500/7600/7700) are in the static XML group and are always
+# visible — they do NOT appear in this map.
+# ---------------------------------------------------------------------------
+var _PHASE_BUTTONS = {
+    "preflight": [
+        {legend: "IFR Clearance",   type: "ifr_clearance"},
+        {legend: "Radio Check",     type: "radio_check"},
+        {legend: "SimBrief",        type: "simbrief"},
+        {legend: "FSS Brief",       type: "fss_briefing"},
+        {legend: "Airspace",        type: "airspace_check"},
+        {legend: "Kneeboard",       type: "kneeboard"}
+    ],
+    "clearance": [
+        {legend: "IFR Clearance",   type: "ifr_clearance"},
+        {legend: "Radio Check",     type: "radio_check"}
+    ],
+    "pushback": [
+        {legend: "Pushback",        type: "pushback"},
+        {legend: "Radio Check",     type: "radio_check"}
+    ],
+    "taxi_out": [
+        {legend: "Taxi",            type: "taxi"},
+        {legend: "Intersection Dep",type: "intersection_departure"},
+        {legend: "CTAF",            type: "ctaf"},
+        {legend: "Radio Check",     type: "radio_check"}
+    ],
+    "takeoff": [
+        {legend: "Takeoff",         type: "takeoff"},
+        {legend: "Intersection Dep",type: "intersection_departure"},
+        {legend: "Radio Check",     type: "radio_check"}
+    ],
+    "departure": [
+        {legend: "Radio Check",     type: "radio_check"},
+        {legend: "Wx Deviation",    type: "weather_deviation"},
+        {legend: "PIREP",           type: "pirep"}
+    ],
+    "climb": [
+        {legend: "Radio Check",     type: "radio_check"},
+        {legend: "Wx Deviation",    type: "weather_deviation"},
+        {legend: "PIREP",           type: "pirep"},
+        {legend: "Windshear",       type: "windshear"}
+    ],
+    "cruise": [
+        {legend: "Radio Check",     type: "radio_check"},
+        {legend: "Wx Deviation",    type: "weather_deviation"},
+        {legend: "PIREP",           type: "pirep"},
+        {legend: "Windshear",       type: "windshear"}
+    ],
+    "descent": [
+        {legend: "Holding",         type: "holding"},
+        {legend: "Expect Apch",     type: "expect_approach"},
+        {legend: "Arrival Clrnc",   type: "arrival_clearance"},
+        {legend: "Flow Control",    type: "flow_control"},
+        {legend: "Radio Check",     type: "radio_check"},
+        {legend: "Windshear",       type: "windshear"}
+    ],
+    "arrival": [
+        {legend: "Approach",        type: "approach"},
+        {legend: "ILS",             type: "ils"},
+        {legend: "Field in Sight",  type: "airfield_in_sight"},
+        {legend: "Holding",         type: "holding"},
+        {legend: "Arrival Clrnc",   type: "arrival_clearance"},
+        {legend: "Radio Check",     type: "radio_check"}
+    ],
+    "approach": [
+        {legend: "Approach",        type: "approach"},
+        {legend: "ILS",             type: "ils"},
+        {legend: "Field in Sight",  type: "airfield_in_sight"},
+        {legend: "LAHSO",           type: "lahso"},
+        {legend: "Radio Check",     type: "radio_check"}
+    ],
+    "landing": [
+        {legend: "LAHSO",           type: "lahso"},
+        {legend: "Go-Around",       type: "go_around"},
+        {legend: "Radio Check",     type: "radio_check"}
+    ],
+    "taxi_in": [
+        {legend: "Taxi",            type: "taxi"},
+        {legend: "CTAF",            type: "ctaf"},
+        {legend: "Radio Check",     type: "radio_check"}
+    ],
+    "parked": [
+        {legend: "Kneeboard",       type: "kneeboard"},
+        {legend: "Career",          type: "career"},
+        {legend: "Scenario",        type: "scenario"},
+        {legend: "Radio Check",     type: "radio_check"}
+    ]
+};
+
+# Populate the <group name="phase-buttons"> in the dialog property tree for
+# the given phase. FG stores the dialog property tree at
+# /sim/gui/dialogs/ai-atc/ after the first dialog-show; dialog-show then
+# rebuilds PUI widgets from that tree, so modifying the tree before each
+# show is the mechanism that delivers the compact phase-only button set.
+var _build_phase_buttons = func(phase) {
+    var dlg = props.globals.getNode("/sim/gui/dialogs/ai-atc");
+    if (dlg == nil) return;  # tree not loaded yet; silent no-op
+    # Find the phase-buttons group by its <name> child.
+    var phase_grp = nil;
+    foreach (var g; dlg.getChildren("group")) {
+        var nm = g.getNode("name");
+        if (nm != nil and nm.getValue() == "phase-buttons") {
+            phase_grp = g;
+            break;
+        }
+    }
+    if (phase_grp == nil) return;
+    # Remove any buttons from a previous phase.
+    foreach (var b; phase_grp.getChildren("button")) {
+        phase_grp.removeChild(b);
+    }
+    # Look up the button list; fall back to empty if phase is unrecognised.
+    var btn_list = _PHASE_BUTTONS[phase];
+    if (btn_list == nil) btn_list = [];
+    # Write button nodes in a 2-column table layout (row/col attributes).
+    var row = 0;
+    var col = 0;
+    foreach (var bdata; btn_list) {
+        var btn = phase_grp.addChild("button");
+        btn.getNode("legend",     1).setValue(bdata.legend);
+        btn.getNode("pref-width", 1).setIntValue(185);
+        btn.getNode("row",        1).setIntValue(row);
+        btn.getNode("col",        1).setIntValue(col);
+        var bd = btn.addChild("binding");
+        bd.getNode("command", 1).setValue("nasal");
+        bd.getNode("script",  1).setValue('aiatc.request("' ~ bdata.type ~ '");');
+        col = col + 1;
+        if (col >= 2) { col = 0; row = row + 1; }
+    }
+};
+
+# Open the phase-aware dialog (Option A: property-tree population + rebuild).
+# On the very first call the dialog property tree does not exist yet, so we
+# show once to load the XML tree, then immediately close and reopen with the
+# correct phase buttons already written in. Subsequent calls skip the
+# extra show because the tree is already present.
+var open_dialog = func {
+    var phase = getprop(ROOT ~ "/flight-phase") or "preflight";
+    if (props.globals.getNode("/sim/gui/dialogs/ai-atc") == nil) {
+        # First call: load the dialog XML into the property tree.
+        fgcommand("dialog-show", props.Node.new({"dialog-name": "ai-atc"}));
+    }
+    _build_phase_buttons(phase);
+    fgcommand("dialog-close", props.Node.new({"dialog-name": "ai-atc"}));
+    fgcommand("dialog-show",  props.Node.new({"dialog-name": "ai-atc"}));
 };
 
 # ---------------------------------------------------------------------------
@@ -492,7 +646,19 @@ var main = func(addon) {
     # Expose request() in the global namespace so dialog <command>nasal</command>
     # bindings (which run in the global scope, not the add-on scope) can reach it
     # via the short name  aiatc.request("pushback")  etc.
-    globals.aiatc = { request: request, ptt: ptt, set_runway_active: set_runway_active, set_mode: set_mode, set_language: set_language, set_region: set_region };
+    globals.aiatc = { request: request, ptt: ptt, set_runway_active: set_runway_active, set_mode: set_mode, set_language: set_language, set_region: set_region, open_dialog: open_dialog };
+
+    # Rebuild the dialog when the sidecar advances the flight phase (Option A:
+    # close + reopen so FG rebuilds PUI widgets with the new phase's buttons).
+    # Guard: only rebuild when the dialog is currently open so phase changes
+    # during a closed dialog do not silently pop it open.
+    append(_listeners, setlistener(ROOT ~ "/flight-phase", func(n) {
+        if (!getprop(ROOT ~ "/dialog-open")) return;
+        var phase = n.getValue() or "preflight";
+        _build_phase_buttons(phase);
+        fgcommand("dialog-close", props.Node.new({"dialog-name": "ai-atc"}));
+        fgcommand("dialog-show",  props.Node.new({"dialog-name": "ai-atc"}));
+    }, 0, 0));
 
     # Surface each new clearance in the transcript as the sidecar writes it.
     append(_listeners, setlistener(ROOT ~ "/response/text", func(n) {
