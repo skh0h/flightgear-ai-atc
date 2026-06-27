@@ -835,6 +835,38 @@ class Sidecar:
         self.bridge.set(REQ_TRIGGER, 0)
 
     # ------------------------------------------------------------------
+    # Stage 4: auto-readback (pilot voice, triggered ~3.5 s after ATC)
+    # ------------------------------------------------------------------
+
+    def _handle_auto_readback(self) -> None:
+        """Generate and speak the pilot's readback for the last clearance.
+
+        Uses the cached ``_last_clearance`` set when the most recent ATC
+        clearance was issued.  Speaks with ``role="pilot"`` so the macOS
+        ``say`` backend selects the Moira voice, distinct from all controller
+        voices.  Writes ``[Readback] <text>`` to RESP_TEXT so the existing
+        transcript listener logs it alongside the ATC clearance.
+
+        Best-effort throughout: any failure still finalises RESP_TEXT/RESP_READY
+        so the mailbox never hangs.
+        """
+        clearance = self._last_clearance
+        if clearance is not None:
+            text = phraseology.expected_readback(clearance)
+        else:
+            text = ""
+        if text:
+            try:
+                self.tts.speak(text, role="pilot")
+            except Exception:
+                _log.debug("auto-readback speak failed", exc_info=True)
+        resp_text = f"[Readback] {text}" if text else "[Readback] —"
+        self.bridge.set(RESP_TEXT, resp_text)
+        self.bridge.set(RESP_READY, 1)
+        self.bridge.set(STATUS, "idle")
+        self.bridge.set(REQ_TRIGGER, 0)
+
+    # ------------------------------------------------------------------
     # Phase 9: training / gamification announce handlers
     # ------------------------------------------------------------------
 
@@ -994,6 +1026,10 @@ class Sidecar:
 
         if req_type == "readback":
             self._handle_readback()
+            return
+
+        if req_type == "auto_readback":
+            self._handle_auto_readback()
             return
 
         # Phase 9: training / gamification announce types.  Each is a

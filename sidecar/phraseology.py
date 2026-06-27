@@ -330,6 +330,22 @@ def expected_readback(clearance: Clearance) -> str:
         return f"expect approach runway {rwy}".strip()
     if ctype == "ils":
         return f"cleared ils runway {rwy} approach".strip()
+    if ctype == "holding":
+        fix = clearance.hold_fix or _safe_rwy(clearance.hold_short) or "the fix"
+        return f"holding at {fix} as published"
+    if ctype == "ifr_clearance":
+        dest = clearance.destination or "destination"
+        squawk = clearance.squawk or "as assigned"
+        return f"cleared to {dest} as filed squawk {squawk}"
+    if ctype in ("mayday", "pan_pan"):
+        label = ctype.replace("_", "-")
+        return f"roger {label}"
+    if ctype == "squawk_7500":
+        return "squawk seven five zero zero"
+    if ctype == "squawk_7600":
+        return "squawk seven six zero zero"
+    if ctype == "squawk_7700":
+        return "squawk seven seven zero zero"
 
     # Generic fallback for any other clearance type: the action plus the runway.
     generic = ctype.replace("_", " ")

@@ -25,8 +25,7 @@
   </ai-atc>
 
   <!-- Key bindings (fire without opening the dialog):
-         Ctrl+Shift+T  (n=20) — request taxi clearance
-         Ctrl+R        (n=18) — push-to-talk: submit the current readback -->
+         Ctrl+Shift+T  (n=20) — request taxi clearance -->
   <input>
     <keyboard>
       <key n="20">
@@ -36,15 +35,6 @@
         <binding>
           <command>nasal</command>
           <script>aiatc.request("taxi");</script>
-        </binding>
-      </key>
-      <key n="18">
-        <name>Ctrl-R</name>
-        <desc>AI ATC: push-to-talk — submit readback (/ai-atc/readback/heard)</desc>
-        <mod-ctrl type="bool">true</mod-ctrl>
-        <binding>
-          <command>nasal</command>
-          <script>aiatc.ptt();</script>
         </binding>
       </key>
     </keyboard>

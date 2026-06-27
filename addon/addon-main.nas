@@ -31,12 +31,8 @@
 #   /ai-atc/request/trigger   (bool)   set to 1 to fire the request; sidecar resets to 0
 #   /ai-atc/response/text     (string) latest ATC clearance text written by the sidecar
 #   /ai-atc/response/ready    (bool)   set to 1 by the sidecar when a response is available
-#   /ai-atc/readback/heard    (string) pilot's readback text (Phase 5 push-to-talk).
-#                               Live-bound to the dialog's Readback input; also set
-#                               by aiatc.ptt() (Ctrl+R) and graded on a "readback"
-#                               request.
-#   /ai-atc/readback/result   (string) human-readable readback grade written by the
-#                               sidecar, e.g. "OK (1.00)" / "Missing: 28R". Shown live.
+#   /ai-atc/readback/heard    (string) reserved (Phase 5 legacy; no longer shown in dialog).
+#   /ai-atc/readback/result   (string) reserved (Phase 5 legacy; no longer shown in dialog).
 #   /ai-atc/status            (string) "idle" | "processing" | "error"
 #   /ai-atc/log               (string) accumulating transcript shown in the dialog
 #   /ai-atc/sidecar/heartbeat (int)    incremented every ~5 s by the sidecar
@@ -377,6 +373,14 @@ var open_dialog = func {
 # Watchdog: started when request() fires, cancelled when a reply arrives.
 # ---------------------------------------------------------------------------
 var _watchdog_timer = nil;
+var _readback_timer = nil;
+
+var _cancel_readback_timer = func {
+    if (_readback_timer != nil) {
+        _readback_timer.stop();
+        _readback_timer = nil;
+    }
+};
 
 var _cancel_watchdog = func {
     if (_watchdog_timer != nil) {
@@ -416,16 +420,6 @@ var request = func(req_type) {
     setprop(ROOT ~ "/request/trigger", 1);
     append_log("[you] request " ~ req_type ~ " (" ~ callsign ~ ")");
     _start_watchdog();
-};
-
-# Push-to-talk: submit the pilot's readback for grading. The dialog's Readback
-# <input> writes /ai-atc/readback/heard live, so ptt() simply fires a "readback"
-# request; the sidecar grades the heard text against the most recent clearance
-# and writes /ai-atc/readback/result. Exposed on globals.aiatc so the Ctrl+R
-# keybinding (which runs in the global scope) can submit a readback without the
-# dialog open. Minimal and best-effort: an empty heard field still fires.
-var ptt = func {
-    request("readback");
 };
 
 # Mode A: set runway[idx]/active to "1" (active) or "0" (inactive). Exposed on
@@ -691,7 +685,7 @@ var main = func(addon) {
     # Expose request() in the global namespace so dialog <command>nasal</command>
     # bindings (which run in the global scope, not the add-on scope) can reach it
     # via the short name  aiatc.request("pushback")  etc.
-    globals.aiatc = { request: request, ptt: ptt, set_runway_active: set_runway_active, set_mode: set_mode, set_language: set_language, set_region: set_region, open_dialog: open_dialog };
+    globals.aiatc = { request: request, set_runway_active: set_runway_active, set_mode: set_mode, set_language: set_language, set_region: set_region, open_dialog: open_dialog };
 
     # Rebuild the dialog when the sidecar advances the flight phase (Option A:
     # close + reopen so FG rebuilds PUI widgets with the new phase's buttons).
@@ -712,10 +706,25 @@ var main = func(addon) {
     }, 0, 0));
 
     # Cancel watchdog and clear processing flag once a response is ready.
+    # Stage 4: after ATC transmits (RESP_READY=1), wait 3.5 s then fire
+    # auto_readback so the pilot's readback is spoken and logged automatically.
+    # Guard: cancel any stale timer first so overlapping responses don't stack.
+    # The auto_readback request itself sets RESP_READY=1 again, which would
+    # retrigger — skip scheduling another readback when the text already is one.
     append(_listeners, setlistener(ROOT ~ "/response/ready", func(n) {
         if (n.getBoolValue()) {
             _cancel_watchdog();
             setprop(ROOT ~ "/status", "idle");
+            var resp = getprop(ROOT ~ "/response/text") or "";
+            if (size(resp) >= 10 and left(resp, 10) != "[Readback]") {
+                _cancel_readback_timer();
+                _readback_timer = maketimer(3.5, func {
+                    _readback_timer = nil;
+                    aiatc.request("auto_readback");
+                });
+                _readback_timer.singleShot = 1;
+                _readback_timer.start();
+            }
         }
     }, 0, 0));
 
@@ -783,6 +792,7 @@ var unload = func(addon) {
     foreach (var l; _listeners) removelistener(l);
     _listeners = [];
     _cancel_watchdog();
+    _cancel_readback_timer();
     if (_heartbeat_timer != nil) {
         _heartbeat_timer.stop();
         _heartbeat_timer = nil;

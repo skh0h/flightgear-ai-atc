@@ -330,32 +330,6 @@
     <stretch type="bool">true</stretch>
   </textbox>
 
-  <!-- ── Readback (manual push-to-talk; removed in Stage 4) ─────── -->
-  <group>
-    <layout>hbox</layout>
-    <default-padding type="int">4</default-padding>
-    <text><label>Readback:</label></text>
-    <input>
-      <property>/ai-atc/readback/heard</property>
-      <live type="bool">true</live>
-      <pref-width type="int">260</pref-width>
-    </input>
-    <button>
-      <legend>Submit Readback</legend>
-      <pref-width type="int">120</pref-width>
-      <binding>
-        <command>nasal</command>
-        <script>aiatc.request("readback");</script>
-      </binding>
-    </button>
-  </group>
-  <text>
-    <property>/ai-atc/readback/result</property>
-    <live type="bool">true</live>
-    <format>Readback: %s</format>
-    <halign>left</halign>
-  </text>
-
   <!-- ── Language / region config ────────────────────────────────── -->
   <group>
     <layout>hbox</layout>

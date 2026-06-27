@@ -1970,3 +1970,193 @@ def test_handle_trigger_windshear_with_wind_appends_advisory(
     assert "20" in resp
     assert bridge.props[RESP_READY] == 1
     assert backend.said
+
+
+# ---------------------------------------------------------------------------
+# Stage 4: pilot voice in _ROLE_VOICES
+# ---------------------------------------------------------------------------
+
+
+def test_role_voices_has_pilot() -> None:
+    """_ROLE_VOICES must contain a 'pilot' entry for the auto-readback voice."""
+    from sidecar.tts import _ROLE_VOICES
+    assert "pilot" in _ROLE_VOICES
+    assert _ROLE_VOICES["pilot"]  # non-empty string
+
+
+def test_voice_for_pilot_is_distinct_from_controllers() -> None:
+    """voice_for('pilot') must differ from every controller voice."""
+    controller_roles = ("ground", "tower", "approach", "departure", "atis")
+    pilot_voice = voice_for("pilot")
+    for role in controller_roles:
+        assert voice_for(role) != pilot_voice, (
+            f"pilot voice {pilot_voice!r} collides with role {role!r}"
+        )
+
+
+# ---------------------------------------------------------------------------
+# Stage 4: expected_readback() new cases
+# ---------------------------------------------------------------------------
+
+
+from sidecar.phraseology import Clearance, expected_readback  # noqa: E402
+
+
+def _clr(**kwargs):  # type: ignore[return]
+    """Minimal Clearance factory — only set what the test needs."""
+    defaults = dict(
+        clearance_type="taxi",
+        callsign="N1",
+        active_runway="",
+        taxi_route=[],
+        hold_short="",
+        hold_direction="",
+        hold_fix="",
+        frequency="",
+        remarks="",
+        altitude="",
+        destination="",
+        squawk="",
+        aircraft_type="",
+        efc="",
+        route="",
+    )
+    defaults.update(kwargs)
+    return Clearance(**defaults)
+
+
+def test_expected_readback_holding_with_fix() -> None:
+    clr = _clr(clearance_type="holding", hold_fix="GROVE")
+    assert expected_readback(clr) == "holding at GROVE as published"
+
+
+def test_expected_readback_holding_without_fix_uses_hold_short() -> None:
+    clr = _clr(clearance_type="holding", hold_fix="", hold_short="28R")
+    result = expected_readback(clr)
+    assert "28R" in result
+    assert "as published" in result
+
+
+def test_expected_readback_ifr_clearance_with_fields() -> None:
+    clr = _clr(clearance_type="ifr_clearance", destination="KLAX", squawk="2345")
+    result = expected_readback(clr)
+    assert "KLAX" in result
+    assert "2345" in result
+    assert "as filed" in result
+
+
+def test_expected_readback_ifr_clearance_defaults() -> None:
+    clr = _clr(clearance_type="ifr_clearance", destination="", squawk="")
+    result = expected_readback(clr)
+    assert "destination" in result
+    assert "as assigned" in result
+
+
+def test_expected_readback_mayday() -> None:
+    clr = _clr(clearance_type="mayday")
+    result = expected_readback(clr)
+    assert "mayday" in result.lower()
+
+
+def test_expected_readback_pan_pan() -> None:
+    clr = _clr(clearance_type="pan_pan")
+    result = expected_readback(clr)
+    assert "pan" in result.lower()
+
+
+@pytest.mark.parametrize("ctype,token", [
+    ("squawk_7500", "7500"),
+    ("squawk_7600", "7600"),
+    ("squawk_7700", "7700"),
+])
+def test_expected_readback_squawk_types(ctype: str, token: str) -> None:
+    clr = _clr(clearance_type=ctype)
+    result = expected_readback(clr)
+    # Result must contain the four digit tokens spoken individually (e.g. "seven five zero zero")
+    digits = {"0": "zero", "5": "five", "6": "six", "7": "seven"}
+    for d in token:
+        assert digits[d] in result, f"Expected spoken digit {digits[d]!r} in {result!r}"
+
+
+# ---------------------------------------------------------------------------
+# Stage 4: _handle_auto_readback produces [Readback] text and speaks pilot voice
+# ---------------------------------------------------------------------------
+
+
+def test_auto_readback_writes_readback_line_to_resp_text(tmp_path: Path) -> None:
+    """auto_readback writes '[Readback] ...' to RESP_TEXT and sets RESP_READY."""
+    pic = _synthetic_picture()
+    props = {
+        AIRPORT_ID: pic.icao,
+        REQ_TYPE: "taxi",
+        REQ_CALLSIGN: "UAL9",
+        REQ_RUNWAY: "28L",
+        POS_LAT: "37.620",
+        POS_LON: "-122.380",
+        REQ_TRIGGER: "1",
+    }
+    sidecar, bridge, backend = _make_with_picture(tmp_path, props, pic)
+    # Issue a real clearance first so _last_clearance is populated.
+    sidecar.handle_trigger()
+    assert sidecar._last_clearance is not None
+
+    # Now simulate the auto_readback request.
+    bridge.props[REQ_TYPE] = "auto_readback"
+    bridge.props[REQ_TRIGGER] = "1"
+    sidecar.handle_trigger()
+
+    resp = bridge.props[RESP_TEXT]
+    assert resp.startswith("[Readback]"), f"Expected '[Readback]' prefix, got: {resp!r}"
+    assert bridge.props[RESP_READY] == 1
+    assert bridge.props[STATUS] == "idle"
+    assert bridge.props[REQ_TRIGGER] == 0
+
+
+def test_auto_readback_speaks_with_pilot_voice(tmp_path: Path) -> None:
+    """auto_readback must invoke TTS with role='pilot' (Moira on macOS say)."""
+    from sidecar.tts import _ROLE_VOICES
+
+    pic = _synthetic_picture()
+    props = {
+        AIRPORT_ID: pic.icao,
+        REQ_TYPE: "takeoff",
+        REQ_CALLSIGN: "SWA1",
+        REQ_RUNWAY: "28L",
+        POS_LAT: "37.620",
+        POS_LON: "-122.380",
+        REQ_TRIGGER: "1",
+    }
+    sidecar, bridge, backend = _make_with_picture(tmp_path, props, pic)
+    sidecar.handle_trigger()                          # issues takeoff clearance
+    backend.said.clear()                              # reset; only care about readback
+
+    bridge.props[REQ_TYPE] = "auto_readback"
+    bridge.props[REQ_TRIGGER] = "1"
+    sidecar.handle_trigger()
+
+    assert backend.said, "auto_readback should have spoken something"
+    _, spoken_voice = backend.said[0]
+    assert spoken_voice == _ROLE_VOICES["pilot"], (
+        f"Expected pilot voice {_ROLE_VOICES['pilot']!r}, got {spoken_voice!r}"
+    )
+
+
+def test_auto_readback_without_prior_clearance_writes_placeholder(tmp_path: Path) -> None:
+    """auto_readback with no prior clearance writes '[Readback] —' and does not crash."""
+    props = {
+        AIRPORT_ID: "KSFO",
+        REQ_TYPE: "auto_readback",
+        REQ_TRIGGER: "1",
+    }
+    sidecar, bridge, backend = _make(tmp_path, props)
+    assert sidecar._last_clearance is None
+
+    sidecar.handle_trigger()
+
+    resp = bridge.props[RESP_TEXT]
+    assert "[Readback]" in resp
+    assert bridge.props[RESP_READY] == 1
+    assert bridge.props[STATUS] == "idle"
+    assert bridge.props[REQ_TRIGGER] == 0
+    # No voice should be spoken when there is nothing to read back.
+    assert backend.said == []

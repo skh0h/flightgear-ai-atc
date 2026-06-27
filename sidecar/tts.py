@@ -27,12 +27,16 @@ _log = logging.getLogger(__name__)
 
 # Deterministic, distinct macOS ``say`` voices per controller role.  Unknown
 # roles fall back to "Alex" (the project-wide default voice).
+# NOTE: the Piper backend ignores the ``voice`` parameter entirely (see
+# PiperBackend.say — ``voice`` is typed ARG002/unused); pilot-voice distinction
+# therefore only takes effect on the macOS ``say`` backend.
 _ROLE_VOICES = {
     "ground": "Fred",
     "tower": "Daniel",
     "approach": "Samantha",
     "departure": "Karen",
     "atis": "Tom",
+    "pilot": "Moira",   # distinct pilot readback voice (macOS say only)
 }
 _DEFAULT_VOICE = "Alex"
 
