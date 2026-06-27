@@ -26,6 +26,16 @@ def _clean_env(monkeypatch: pytest.MonkeyPatch) -> None:
         "LOG_LEVEL",
         "GEMINI_MODEL_FAST",
         "GEMINI_MODEL_PRO",
+        "AI_TAXIWAY_LABELS",
+        "TTS_ENGINE",
+        "PIPER_BIN",
+        "PIPER_VOICE",
+        "STT_ENGINE",
+        "WHISPER_BIN",
+        "RADIO_STATIC",
+        "CAREER_PATH",
+        "LANGUAGE",
+        "REGION",
     ):
         monkeypatch.delenv(key, raising=False)
 
@@ -181,3 +191,126 @@ def test_empty_host_raises(monkeypatch: pytest.MonkeyPatch) -> None:
 
     with pytest.raises(ConfigError, match="FG_TELNET_HOST"):
         load(env_path=None)
+
+
+def test_ai_taxiway_labels_defaults_false(monkeypatch: pytest.MonkeyPatch) -> None:
+    """ai_taxiway_labels must default to False (data-only / safe mode)."""
+    _clean_env(monkeypatch)
+    settings = load(env_path=None)
+    assert settings.ai_taxiway_labels is False
+
+
+def test_ai_taxiway_labels_enabled_by_env(monkeypatch: pytest.MonkeyPatch) -> None:
+    """AI_TAXIWAY_LABELS=1 enables the flag."""
+    _clean_env(monkeypatch)
+    monkeypatch.setenv("AI_TAXIWAY_LABELS", "1")
+    settings = load(env_path=None)
+    assert settings.ai_taxiway_labels is True
+
+
+def test_ai_taxiway_labels_not_enabled_by_zero(monkeypatch: pytest.MonkeyPatch) -> None:
+    """AI_TAXIWAY_LABELS=0 keeps the flag False."""
+    _clean_env(monkeypatch)
+    monkeypatch.setenv("AI_TAXIWAY_LABELS", "0")
+    settings = load(env_path=None)
+    assert settings.ai_taxiway_labels is False
+
+
+# ---------------------------------------------------------------------------
+# Phase 5: voice-realism settings (TTS/STT/radio static)
+# ---------------------------------------------------------------------------
+
+
+def test_phase5_voice_settings_defaults(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The six Phase 5 fields fall back to safe defaults."""
+    _clean_env(monkeypatch)
+    settings = load(env_path=None)
+    assert settings.tts_engine == "say"
+    assert settings.piper_bin == "piper"
+    assert settings.piper_voice == ""
+    assert settings.stt_engine == "none"
+    assert settings.whisper_bin == "whisper"
+    assert settings.radio_static is False
+
+
+def test_phase5_voice_settings_from_env(monkeypatch: pytest.MonkeyPatch) -> None:
+    """All six Phase 5 fields parse from their environment variables."""
+    _clean_env(monkeypatch)
+    monkeypatch.setenv("TTS_ENGINE", "piper")
+    monkeypatch.setenv("PIPER_BIN", "/opt/piper/piper")
+    monkeypatch.setenv("PIPER_VOICE", "/models/en_US.onnx")
+    monkeypatch.setenv("STT_ENGINE", "whisper")
+    monkeypatch.setenv("WHISPER_BIN", "/opt/whisper/whisper")
+    monkeypatch.setenv("RADIO_STATIC", "1")
+    settings = load(env_path=None)
+    assert settings.tts_engine == "piper"
+    assert settings.piper_bin == "/opt/piper/piper"
+    assert settings.piper_voice == "/models/en_US.onnx"
+    assert settings.stt_engine == "whisper"
+    assert settings.whisper_bin == "/opt/whisper/whisper"
+    assert settings.radio_static is True
+
+
+def test_radio_static_zero_keeps_false(monkeypatch: pytest.MonkeyPatch) -> None:
+    """RADIO_STATIC=0 keeps the flag False (boolean parsing like the others)."""
+    _clean_env(monkeypatch)
+    monkeypatch.setenv("RADIO_STATIC", "0")
+    settings = load(env_path=None)
+    assert settings.radio_static is False
+
+
+# ---------------------------------------------------------------------------
+# Phase 9: career persistence path
+# ---------------------------------------------------------------------------
+
+
+def test_career_path_defaults_empty(monkeypatch: pytest.MonkeyPatch) -> None:
+    """career_path defaults to "" (career persistence off)."""
+    _clean_env(monkeypatch)
+    settings = load(env_path=None)
+    assert settings.career_path == ""
+
+
+def test_career_path_from_env(monkeypatch: pytest.MonkeyPatch) -> None:
+    """CAREER_PATH populates career_path verbatim (trimmed)."""
+    _clean_env(monkeypatch)
+    monkeypatch.setenv("CAREER_PATH", "/tmp/career.json")
+    settings = load(env_path=None)
+    assert settings.career_path == "/tmp/career.json"
+
+
+# ---------------------------------------------------------------------------
+# Phase 10: language (#42) + region (#4)
+# ---------------------------------------------------------------------------
+
+
+def test_language_and_region_default_to_us_english(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """With no env vars, language is 'en' and region is 'us' (the baseline)."""
+    _clean_env(monkeypatch)
+    settings = load(env_path=None)
+    assert settings.language == "en"
+    assert settings.region == "us"
+
+
+def test_language_and_region_from_env(monkeypatch: pytest.MonkeyPatch) -> None:
+    """LANGUAGE and REGION are parsed and lower-cased."""
+    _clean_env(monkeypatch)
+    monkeypatch.setenv("LANGUAGE", "FR")
+    monkeypatch.setenv("REGION", "UK")
+    settings = load(env_path=None)
+    assert settings.language == "fr"
+    assert settings.region == "uk"
+
+
+def test_empty_language_region_fall_back_to_defaults(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Empty LANGUAGE/REGION strings fall back to the 'en'/'us' defaults."""
+    _clean_env(monkeypatch)
+    monkeypatch.setenv("LANGUAGE", "")
+    monkeypatch.setenv("REGION", "")
+    settings = load(env_path=None)
+    assert settings.language == "en"
+    assert settings.region == "us"

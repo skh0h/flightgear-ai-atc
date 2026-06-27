@@ -15,9 +15,17 @@
     </response>
     <status type="string">idle</status>
     <log type="string"></log>
+    <!-- Push-to-talk readback mailbox (Phase 5). /readback/heard holds the
+         pilot's typed/spoken readback; the sidecar grades it on a "readback"
+         request and writes a human result to /readback/result. -->
+    <readback>
+      <heard type="string"></heard>
+      <result type="string"></result>
+    </readback>
   </ai-atc>
 
-  <!-- Ctrl+Shift+T fires a taxi request without opening the dialog. -->
+  <!-- Key bindings (fire without opening the dialog):
+         Ctrl+Shift+T  (n=20) — request taxi clearance -->
   <input>
     <keyboard>
       <key n="20">
@@ -26,12 +34,7 @@
         <mod-ctrl type="bool">true</mod-ctrl>
         <binding>
           <command>nasal</command>
-          <script>
-            setprop("/ai-atc/request/type", "taxi");
-            setprop("/ai-atc/response/ready", 0);
-            setprop("/ai-atc/status", "processing");
-            setprop("/ai-atc/request/trigger", 1);
-          </script>
+          <script>aiatc.request("taxi");</script>
         </binding>
       </key>
     </keyboard>

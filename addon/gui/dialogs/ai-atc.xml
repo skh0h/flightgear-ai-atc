@@ -1,110 +1,420 @@
 <?xml version="1.0" encoding="UTF-8"?>
-<!-- AI ATC dialog: callsign/runway inputs, scrolling transcript, request buttons. -->
+<!-- AI ATC dialog: state-aware compact 2-column panel.
+     Phase-specific request buttons are populated dynamically by
+     _build_phase_buttons() in addon-main.nas before each dialog-show;
+     the empty <group name="phase-buttons"> is the insertion point.
+     Emergency buttons are statically defined here and always visible. -->
 <PropertyList>
-  <dialog>
-    <name>ai-atc</name>
-    <layout>vbox</layout>
+  <name>ai-atc</name>
+  <layout>vbox</layout>
+  <default-padding type="int">4</default-padding>
+  <resizable type="bool">true</resizable>
+
+  <!-- ── Header: title + airport ─────────────────────────────────── -->
+  <text>
+    <label>AI ATC</label>
+    <halign>center</halign>
+  </text>
+  <group>
+    <layout>hbox</layout>
+    <halign>center</halign>
+    <text>
+      <property>/ai-atc/airport/icao</property>
+      <live type="bool">true</live>
+    </text>
+    <text><label>  </label></text>
+    <text>
+      <property>/ai-atc/airport/name</property>
+      <live type="bool">true</live>
+    </text>
+  </group>
+
+  <!-- Live controller persona name, published by the sidecar. -->
+  <text>
+    <property>/ai-atc/controller/name</property>
+    <live type="bool">true</live>
+    <format>Controller: %s</format>
+    <halign>center</halign>
+  </text>
+
+  <!-- ── Backend status (key "feels broken" fix) + ATC status ────── -->
+  <text>
+    <property>/ai-atc/backend</property>
+    <live type="bool">true</live>
+    <format>Backend: %s</format>
+    <halign>left</halign>
+  </text>
+  <text>
+    <property>/ai-atc/status</property>
+    <live type="bool">true</live>
+    <format>Status:  %s</format>
+    <halign>left</halign>
+  </text>
+  <!-- Live flight phase published by the sidecar to /ai-atc/flight-phase. -->
+  <text>
+    <property>/ai-atc/flight-phase</property>
+    <live type="bool">true</live>
+    <format>Phase:   %s</format>
+    <halign>left</halign>
+  </text>
+  <!-- Mode B: live ground-traffic sequencing summary written by the sidecar. -->
+  <text>
+    <property>/ai-atc/traffic/summary</property>
+    <live type="bool">true</live>
+    <format>Traffic: %s</format>
+    <halign>left</halign>
+  </text>
+  <!-- Live ambient-chatter line published by the sidecar to /ai-atc/chatter. -->
+  <text>
+    <property>/ai-atc/chatter</property>
+    <live type="bool">true</live>
+    <format>Chatter: %s</format>
+    <halign>left</halign>
+  </text>
+  <!-- Live airspace class + advisory published by the add-on's publish_airspace(). -->
+  <text>
+    <property>/ai-atc/airspace/class</property>
+    <live type="bool">true</live>
+    <format>Airspace: %s</format>
+    <halign>left</halign>
+  </text>
+  <text>
+    <property>/ai-atc/airspace/warning</property>
+    <live type="bool">true</live>
+    <format>%s</format>
+    <halign>left</halign>
+  </text>
+  <!-- Live guardrail validation warning published by the sidecar. -->
+  <text>
+    <property>/ai-atc/guardrail</property>
+    <live type="bool">true</live>
+    <format>Guardrail: %s</format>
+    <halign>left</halign>
+  </text>
+
+  <!-- ── Interaction mode (normal / student / checkride) ─────────── -->
+  <group>
+    <layout>hbox</layout>
     <default-padding type="int">4</default-padding>
-
+    <text><label>Mode:</label></text>
+    <button>
+      <legend>Normal</legend>
+      <pref-width type="int">75</pref-width>
+      <binding>
+        <command>nasal</command>
+        <script>aiatc.set_mode("normal");</script>
+      </binding>
+    </button>
+    <button>
+      <legend>Student</legend>
+      <pref-width type="int">75</pref-width>
+      <binding>
+        <command>nasal</command>
+        <script>aiatc.set_mode("student");</script>
+      </binding>
+    </button>
+    <button>
+      <legend>Checkride</legend>
+      <pref-width type="int">85</pref-width>
+      <binding>
+        <command>nasal</command>
+        <script>aiatc.set_mode("checkride");</script>
+      </binding>
+    </button>
     <text>
-      <label>AI ATC</label>
+      <property>/ai-atc/mode</property>
+      <live type="bool">true</live>
+      <format>  (%s)</format>
     </text>
+  </group>
 
-    <!-- Callsign + runway entry -->
-    <group>
-      <layout>hbox</layout>
-      <text><label>Callsign</label></text>
-      <input>
-        <property>/ai-atc/request/callsign</property>
-        <live type="bool">true</live>
-      </input>
-      <text><label>Runway</label></text>
-      <input>
-        <property>/ai-atc/request/runway</property>
-        <live type="bool">true</live>
-      </input>
-    </group>
-
-    <!-- Status line -->
+  <!-- ── Frequencies ─────────────────────────────────────────────── -->
+  <group>
+    <layout>hbox</layout>
+    <default-padding type="int">4</default-padding>
     <text>
-      <label>Status: idle</label>
-      <property>/ai-atc/status</property>
+      <property>/ai-atc/airport/freq/ground</property>
       <live type="bool">true</live>
-      <format>Status: %s</format>
+      <format>GND: %s</format>
     </text>
-
-    <!-- Scrolling clearance transcript -->
-    <textbox>
-      <name>atc-log</name>
-      <rows type="int">12</rows>
-      <cols type="int">60</cols>
-      <editable type="bool">false</editable>
-      <slider type="int">15</slider>
-      <property>/ai-atc/log</property>
+    <text>
+      <property>/ai-atc/airport/freq/tower</property>
       <live type="bool">true</live>
-    </textbox>
+      <format>  TWR: %s</format>
+    </text>
+    <text>
+      <property>/ai-atc/airport/freq/atis</property>
+      <live type="bool">true</live>
+      <format>  ATIS: %s</format>
+    </text>
+    <text>
+      <property>/ai-atc/airport/freq/approach</property>
+      <live type="bool">true</live>
+      <format>  APP: %s</format>
+    </text>
+    <text>
+      <property>/ai-atc/airport/freq/departure</property>
+      <live type="bool">true</live>
+      <format>  DEP: %s</format>
+    </text>
+  </group>
 
-    <!-- Request buttons -->
-    <group>
-      <layout>hbox</layout>
+  <!-- ── Active runways (Mode A) ─────────────────────────────────── -->
+  <group>
+    <layout>hbox</layout>
+    <default-padding type="int">4</default-padding>
+    <text><label>Active runways:</label></text>
+    <checkbox>
+      <property>/ai-atc/airport/runway[0]/active</property>
+      <live type="bool">true</live>
+      <binding>
+        <command>nasal</command>
+        <script>aiatc.set_runway_active(0, getprop("/ai-atc/airport/runway[0]/active"));</script>
+      </binding>
+    </checkbox>
+    <text>
+      <property>/ai-atc/airport/runway[0]/id</property>
+      <live type="bool">true</live>
+    </text>
+    <text><label>   </label></text>
+    <checkbox>
+      <property>/ai-atc/airport/runway[1]/active</property>
+      <live type="bool">true</live>
+      <binding>
+        <command>nasal</command>
+        <script>aiatc.set_runway_active(1, getprop("/ai-atc/airport/runway[1]/active"));</script>
+      </binding>
+    </checkbox>
+    <text>
+      <property>/ai-atc/airport/runway[1]/id</property>
+      <live type="bool">true</live>
+    </text>
+  </group>
+  <text>
+    <label>(Unchecked = runway closed for this session; other runways default active.)</label>
+    <halign>left</halign>
+  </text>
 
-      <button>
-        <legend>Pushback</legend>
-        <binding>
-          <command>nasal</command>
-          <script>
-            setprop("/ai-atc/request/type", "pushback");
-            setprop("/ai-atc/response/ready", 0);
-            setprop("/ai-atc/status", "processing");
-            setprop("/ai-atc/request/trigger", 1);
-          </script>
-        </binding>
-      </button>
+  <!-- ── Inputs: callsign + runway ───────────────────────────────── -->
+  <group>
+    <layout>hbox</layout>
+    <default-padding type="int">4</default-padding>
+    <text><label>Callsign:</label></text>
+    <input>
+      <property>/ai-atc/request/callsign</property>
+      <live type="bool">true</live>
+      <pref-width type="int">100</pref-width>
+    </input>
+    <text><label>  Runway:</label></text>
+    <input>
+      <property>/ai-atc/request/runway</property>
+      <live type="bool">true</live>
+      <pref-width type="int">60</pref-width>
+    </input>
+  </group>
 
-      <button>
-        <legend>Taxi</legend>
-        <binding>
-          <command>nasal</command>
-          <script>
-            setprop("/ai-atc/request/type", "taxi");
-            setprop("/ai-atc/response/ready", 0);
-            setprop("/ai-atc/status", "processing");
-            setprop("/ai-atc/request/trigger", 1);
-          </script>
-        </binding>
-      </button>
+  <!-- ── Phase-aware request buttons (2-column, populated by Nasal) ─ -->
+  <!-- _build_phase_buttons(phase) in addon-main.nas writes <button> child
+       nodes here before each dialog-show. On phase change the setlistener
+       in addon-main.nas closes then reopens the dialog (Option A rebuild)
+       so FG rebuilds PUI widgets from the updated property tree. -->
+  <text>
+    <name>phase-label</name>
+    <label>── Requests ──────────────────────────────────────────────</label>
+    <halign>left</halign>
+  </text>
+  <group>
+    <name>phase-buttons</name>
+    <layout>table</layout>
+    <default-padding type="int">4</default-padding>
+  </group>
 
-      <button>
-        <legend>Takeoff</legend>
-        <binding>
-          <command>nasal</command>
-          <script>
-            setprop("/ai-atc/request/type", "takeoff");
-            setprop("/ai-atc/response/ready", 0);
-            setprop("/ai-atc/status", "processing");
-            setprop("/ai-atc/request/trigger", 1);
-          </script>
-        </binding>
-      </button>
+  <!-- ── Emergency buttons (always visible in every phase) ───────── -->
+  <!-- Mayday, Pan-Pan, Gear Emergency, Min Fuel, Diversion, Go-Around,
+       Sq 7500, Sq 7600, Sq 7700 — never filtered by phase.
+       2-column table layout; 5 rows for 9 buttons. -->
+  <text>
+    <label>── Emergency ─────────────────────────────────────────────</label>
+    <halign>left</halign>
+  </text>
+  <group>
+    <name>emergency-buttons</name>
+    <layout>table</layout>
+    <default-padding type="int">4</default-padding>
+    <!-- Row 0 -->
+    <button>
+      <legend>Mayday</legend>
+      <row type="int">0</row><col type="int">0</col>
+      <pref-width type="int">185</pref-width>
+      <binding><command>nasal</command><script>aiatc.request("mayday");</script></binding>
+    </button>
+    <button>
+      <legend>Pan-Pan</legend>
+      <row type="int">0</row><col type="int">1</col>
+      <pref-width type="int">185</pref-width>
+      <binding><command>nasal</command><script>aiatc.request("pan_pan");</script></binding>
+    </button>
+    <!-- Row 1 -->
+    <button>
+      <legend>Gear Emergency</legend>
+      <row type="int">1</row><col type="int">0</col>
+      <pref-width type="int">185</pref-width>
+      <binding><command>nasal</command><script>aiatc.request("gear_emergency");</script></binding>
+    </button>
+    <button>
+      <legend>Min Fuel</legend>
+      <row type="int">1</row><col type="int">1</col>
+      <pref-width type="int">185</pref-width>
+      <binding><command>nasal</command><script>aiatc.request("min_fuel");</script></binding>
+    </button>
+    <!-- Row 2 -->
+    <button>
+      <legend>Diversion</legend>
+      <row type="int">2</row><col type="int">0</col>
+      <pref-width type="int">185</pref-width>
+      <binding><command>nasal</command><script>aiatc.request("diversion");</script></binding>
+    </button>
+    <button>
+      <legend>Go-Around</legend>
+      <row type="int">2</row><col type="int">1</col>
+      <pref-width type="int">185</pref-width>
+      <binding><command>nasal</command><script>aiatc.request("go_around");</script></binding>
+    </button>
+    <!-- Row 3 -->
+    <button>
+      <legend>Sq 7500</legend>
+      <row type="int">3</row><col type="int">0</col>
+      <pref-width type="int">185</pref-width>
+      <binding><command>nasal</command><script>aiatc.request("squawk_7500");</script></binding>
+    </button>
+    <button>
+      <legend>Sq 7600</legend>
+      <row type="int">3</row><col type="int">1</col>
+      <pref-width type="int">185</pref-width>
+      <binding><command>nasal</command><script>aiatc.request("squawk_7600");</script></binding>
+    </button>
+    <!-- Row 4 -->
+    <button>
+      <legend>Sq 7700</legend>
+      <row type="int">4</row><col type="int">0</col>
+      <pref-width type="int">185</pref-width>
+      <binding><command>nasal</command><script>aiatc.request("squawk_7700");</script></binding>
+    </button>
+  </group>
 
-      <button>
-        <legend>Cancel</legend>
-        <binding>
-          <command>nasal</command>
-          <script>
-            setprop("/ai-atc/request/type", "cancel");
-            setprop("/ai-atc/request/trigger", 1);
-          </script>
-        </binding>
-      </button>
+  <!-- ── Transcript ──────────────────────────────────────────────── -->
+  <textbox>
+    <name>atc-log</name>
+    <rows type="int">10</rows>
+    <cols type="int">60</cols>
+    <editable type="bool">false</editable>
+    <slider type="int">15</slider>
+    <property>/ai-atc/log</property>
+    <live type="bool">true</live>
+    <stretch type="bool">true</stretch>
+  </textbox>
 
-      <button>
-        <legend>Close</legend>
-        <binding>
-          <command>dialog-close</command>
-          <dialog-name>ai-atc</dialog-name>
-        </binding>
-      </button>
-    </group>
-  </dialog>
+  <!-- ── Kneeboard (live training reference) ─────────────────────── -->
+  <text>
+    <label>Kneeboard:</label>
+    <halign>left</halign>
+  </text>
+  <textbox>
+    <name>atc-kneeboard</name>
+    <rows type="int">6</rows>
+    <cols type="int">60</cols>
+    <editable type="bool">false</editable>
+    <slider type="int">15</slider>
+    <property>/ai-atc/kneeboard</property>
+    <live type="bool">true</live>
+    <stretch type="bool">true</stretch>
+  </textbox>
+
+  <!-- ── Language / region config ────────────────────────────────── -->
+  <group>
+    <layout>hbox</layout>
+    <default-padding type="int">4</default-padding>
+    <halign>center</halign>
+    <text><label>Language:</label></text>
+    <button>
+      <legend>EN</legend>
+      <pref-width type="int">45</pref-width>
+      <binding>
+        <command>nasal</command>
+        <script>aiatc.set_language("en");</script>
+      </binding>
+    </button>
+    <button>
+      <legend>FR</legend>
+      <pref-width type="int">45</pref-width>
+      <binding>
+        <command>nasal</command>
+        <script>aiatc.set_language("fr");</script>
+      </binding>
+    </button>
+    <button>
+      <legend>DE</legend>
+      <pref-width type="int">45</pref-width>
+      <binding>
+        <command>nasal</command>
+        <script>aiatc.set_language("de");</script>
+      </binding>
+    </button>
+    <text><label>  Region:</label></text>
+    <button>
+      <legend>US</legend>
+      <pref-width type="int">45</pref-width>
+      <binding>
+        <command>nasal</command>
+        <script>aiatc.set_region("us");</script>
+      </binding>
+    </button>
+    <button>
+      <legend>UK</legend>
+      <pref-width type="int">45</pref-width>
+      <binding>
+        <command>nasal</command>
+        <script>aiatc.set_region("uk");</script>
+      </binding>
+    </button>
+    <text>
+      <property>/ai-atc/language</property>
+      <live type="bool">true</live>
+      <format>  (%s</format>
+    </text>
+    <text>
+      <property>/ai-atc/region</property>
+      <live type="bool">true</live>
+      <format>/%s)</format>
+    </text>
+  </group>
+
+  <!-- ── About + Close ───────────────────────────────────────────── -->
+  <text>
+    <label>AI ATC — open-source add-on for FlightGear. Not affiliated with any real ATC service.</label>
+    <halign>center</halign>
+  </text>
+  <group>
+    <layout>hbox</layout>
+    <halign>center</halign>
+    <button>
+      <legend>Close</legend>
+      <pref-width type="int">60</pref-width>
+      <binding>
+        <command>dialog-close</command>
+        <dialog-name>ai-atc</dialog-name>
+      </binding>
+    </button>
+  </group>
+
+  <!-- ── Nasal open/close hooks ──────────────────────────────────── -->
+  <!-- <open>: mark dialog as open so the phase-change setlistener in
+       addon-main.nas knows to rebuild on phase transitions.
+       <close>: clear the flag when the user dismisses the dialog so
+       phase changes do not silently reopen it. -->
+  <nasal>
+    <open>setprop("/ai-atc/dialog-open", 1);</open>
+    <close>setprop("/ai-atc/dialog-open", 0);</close>
+  </nasal>
+
 </PropertyList>

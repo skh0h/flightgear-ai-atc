@@ -33,6 +33,28 @@ class Settings:
     gemini_model_pro: str
     metar_enabled: bool = True  # set METAR_ENABLED=0 to disable METAR fetches
     session_log_path: str | None = None  # path to JSONL session log; None = off
+    # AI-inferred taxiway names are unverified guesses — Gemini has no access to
+    # chart data, AIRAC, or any authoritative naming source.  Default False keeps
+    # ATC clearances grounded in real groundnet XML names only.  Enable only once
+    # Gemini is wired to an authoritative source (e.g. FAA NASR, Jeppesen charts).
+    ai_taxiway_labels: bool = False  # set AI_TAXIWAY_LABELS=1 to enable (unsafe)
+    # --- Phase 5: voice realism (all capability-detected, safe defaults) ---
+    tts_engine: str = "say"  # TTS_ENGINE: "say" | "piper"
+    piper_bin: str = "piper"  # PIPER_BIN: piper executable name/path
+    piper_voice: str = ""  # PIPER_VOICE: piper voice model path (empty = default)
+    stt_engine: str = "none"  # STT_ENGINE: "none" | "whisper"
+    whisper_bin: str = "whisper"  # WHISPER_BIN: whisper executable name/path
+    radio_static: bool = False  # set RADIO_STATIC=1 to enable the static hook
+    # --- Phase 9: gamification / training ---
+    # Path to the JSON career-stats file.  Empty string (the default) disables
+    # career persistence so the offline path is unaffected.
+    career_path: str = ""  # CAREER_PATH: path to career-stats JSON ("" = off)
+    # --- Phase 10: multi-language (#42) + regional phraseology packs (#4) ---
+    # ``language`` flavours the ONLINE prompt only (offline templates stay
+    # English); ``region`` applies literal wording substitutions to rendered
+    # text.  Both default to the US-English baseline so behaviour is unchanged.
+    language: str = "en"  # LANGUAGE: ISO-639-1 code ("en" = default, no directive)
+    region: str = "us"  # REGION: regional phraseology pack ("us" = baseline)
 
 
 def load(env_path: str | None = None) -> Settings:
@@ -101,6 +123,24 @@ def load(env_path: str | None = None) -> Settings:
     raw_log_path = os.environ.get("SESSION_LOG_PATH", "").strip()
     session_log_path: str | None = raw_log_path if raw_log_path else None
 
+    # --- ai_taxiway_labels ---
+    ai_taxiway_labels = os.environ.get("AI_TAXIWAY_LABELS", "0").strip() in ("1", "true", "yes")
+
+    # --- Phase 5: voice realism ---
+    tts_engine = os.environ.get("TTS_ENGINE", "say").strip() or "say"
+    piper_bin = os.environ.get("PIPER_BIN", "piper").strip() or "piper"
+    piper_voice = os.environ.get("PIPER_VOICE", "").strip()
+    stt_engine = os.environ.get("STT_ENGINE", "none").strip() or "none"
+    whisper_bin = os.environ.get("WHISPER_BIN", "whisper").strip() or "whisper"
+    radio_static = os.environ.get("RADIO_STATIC", "0").strip() in ("1", "true", "yes")
+
+    # --- Phase 9: career persistence path (empty = off) ---
+    career_path = os.environ.get("CAREER_PATH", "").strip()
+
+    # --- Phase 10: language + region (default to the US-English baseline) ---
+    language = os.environ.get("LANGUAGE", "en").strip().lower() or "en"
+    region = os.environ.get("REGION", "us").strip().lower() or "us"
+
     return Settings(
         gemini_api_key=gemini_api_key,
         fg_telnet_host=fg_telnet_host,
@@ -112,4 +152,14 @@ def load(env_path: str | None = None) -> Settings:
         gemini_model_pro=gemini_model_pro,
         metar_enabled=metar_enabled,
         session_log_path=session_log_path,
+        ai_taxiway_labels=ai_taxiway_labels,
+        tts_engine=tts_engine,
+        piper_bin=piper_bin,
+        piper_voice=piper_voice,
+        stt_engine=stt_engine,
+        whisper_bin=whisper_bin,
+        radio_static=radio_static,
+        career_path=career_path,
+        language=language,
+        region=region,
     )

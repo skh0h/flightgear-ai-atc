@@ -1,14 +1,69 @@
 # addon-main.nas — AI ATC addon entry point
 #
 # /ai-atc/ property mailbox:
-#   /ai-atc/request/type      (string) "pushback" | "taxi" | "takeoff" | "cancel"
+#   /ai-atc/request/type      (string) request token, e.g.:
+#                               departure: "pushback" | "taxi" | "takeoff" |
+#                                          "intersection_departure" | "ifr_clearance" |
+#                                          "cancel"
+#                               arrival:   "approach" | "ils" | "airfield_in_sight" |
+#                                          "lahso" | "radio_check" | "arrival_clearance" |
+#                                          "holding" | "expect_approach"
+#                               flow:      "flow_control"
+#                               emergency: "mayday" | "pan_pan" | "gear_emergency" |
+#                                          "min_fuel" | "diversion" | "go_around" |
+#                                          "squawk_7500" | "squawk_7600" | "squawk_7700"
+#                               info:      "ctaf" | "fss_briefing" | "simbrief" |
+#                                          "airspace_check"
+#                               weather:   "windshear" | "pirep" | "weather_deviation"
+#                               training:  "scenario" | "kneeboard" | "career"
 #   /ai-atc/request/callsign  (string) aircraft callsign, e.g. "N12345"
 #   /ai-atc/request/runway    (string) requested/active runway, e.g. "28R"
+#   /ai-atc/request/destination (string) IFR destination ICAO, best-effort from the
+#                               route-manager; published by publish_flightplan()
+#   /ai-atc/request/route     (string) IFR route string (or "DCT" fallback), published
+#                               by publish_flightplan() for the ifr_clearance request
+#   /ai-atc/request/altitude  (string) requested/cruise altitude in ft, best-effort from
+#                               the route-manager; published by publish_flightplan()
+#   /ai-atc/request/squawk    (string) assigned transponder code; written by the sidecar
+#                               on an ifr_clearance, seeded blank by the add-on
+#   /ai-atc/flight-phase      (string) current flight phase published by the sidecar
+#                               (e.g. "preflight"); shown live in the dialog ("Phase: %s")
 #   /ai-atc/request/trigger   (bool)   set to 1 to fire the request; sidecar resets to 0
 #   /ai-atc/response/text     (string) latest ATC clearance text written by the sidecar
 #   /ai-atc/response/ready    (bool)   set to 1 by the sidecar when a response is available
+#   /ai-atc/readback/heard    (string) reserved (Phase 5 legacy; no longer shown in dialog).
+#   /ai-atc/readback/result   (string) reserved (Phase 5 legacy; no longer shown in dialog).
 #   /ai-atc/status            (string) "idle" | "processing" | "error"
 #   /ai-atc/log               (string) accumulating transcript shown in the dialog
+#   /ai-atc/sidecar/heartbeat (int)    incremented every ~5 s by the sidecar
+#   /ai-atc/sidecar/mode      (string) "ai" | "offline" — set by the sidecar
+#   /ai-atc/backend           (string) human-readable backend status for the UI
+#   /ai-atc/mode              (string) "normal" | "student" | "checkride" — interaction
+#                               mode read by the sidecar (default "normal")
+#   /ai-atc/local-hour        (int)    sim local hour 0-23, published by the add-on for
+#                               the sidecar's quiet-night ("reflective" mood) easter egg
+#   /ai-atc/controller/name   (string) current controller persona name, published by the
+#                               sidecar; shown live in the dialog header
+#   /ai-atc/chatter           (string) one ambient-chatter line published by the sidecar;
+#                               shown live in the dialog ("Chatter: %s")
+#   /ai-atc/airspace/class    (string) coarse airspace class published by the add-on's
+#                               publish_airspace() (default "G"); read by the sidecar for
+#                               the airspace_check request and shown live ("Airspace: %s")
+#   /ai-atc/airspace/warning  (string) human-readable airspace advisory published by
+#                               publish_airspace() (default ""); read by the sidecar and
+#                               shown live in the dialog
+#   /ai-atc/kneeboard         (string) multi-line training reference text published by
+#                               the sidecar (e.g. on a "kneeboard" / "scenario" /
+#                               "career" request); seeded blank by the add-on and shown
+#                               live in the dialog's read-only Kneeboard textbox
+#   /ai-atc/guardrail         (string) human-readable validation warning published by the
+#                               sidecar (e.g. unsafe/ungrounded phraseology); seeded blank
+#                               by the add-on and shown live in the dialog ("Guardrail: %s").
+#                               Usually blank — non-empty means the sidecar flagged an issue.
+#   /ai-atc/language          (string) UI/phraseology language code read by the sidecar
+#                               (default "en"); written by aiatc.set_language(...)
+#   /ai-atc/region            (string) phraseology region code read by the sidecar
+#                               (default "us"); written by aiatc.set_region(...)
 #
 # The Python sidecar polls /ai-atc/request/trigger over the FG telnet interface.
 # When triggered it reads context props, generates a clearance, writes
@@ -18,27 +73,340 @@
 var ROOT = "/ai-atc";
 var _listeners = [];
 
+# How many seconds without a heartbeat increment before we call the sidecar gone.
+var HEARTBEAT_STALE_SEC = 15;
+# Watchdog timeout: seconds after request() before we give up waiting for a reply.
+var WATCHDOG_SEC = 8;
+
 # Initialise the mailbox so the dialog and sidecar see well-formed defaults.
 var _set_defaults = func {
     setprop(ROOT ~ "/request/type", "taxi");
     setprop(ROOT ~ "/request/callsign", "");
     setprop(ROOT ~ "/request/runway", "");
     setprop(ROOT ~ "/request/trigger", 0);
+    # Phase 7 IFR clearance inputs. Seeded blank; publish_flightplan() refreshes
+    # destination/route/altitude best-effort from the route-manager, and the
+    # sidecar may write /request/squawk back on an ifr_clearance.
+    setprop(ROOT ~ "/request/destination", "");
+    setprop(ROOT ~ "/request/route", "");
+    setprop(ROOT ~ "/request/altitude", "");
+    setprop(ROOT ~ "/request/squawk", "");
+    # Current flight phase published by the sidecar to /ai-atc/flight-phase;
+    # seeded "preflight" so the dialog's live "Phase: %s" binding renders before
+    # the sidecar publishes the first phase.
+    setprop(ROOT ~ "/flight-phase", "preflight");
     setprop(ROOT ~ "/response/text", "");
     setprop(ROOT ~ "/response/ready", 0);
+    # Phase 5 push-to-talk readback mailbox. Seeded blank so the dialog's live
+    # Readback input/result bindings render before the sidecar grades anything.
+    setprop(ROOT ~ "/readback/heard", "");
+    setprop(ROOT ~ "/readback/result", "");
     setprop(ROOT ~ "/status", "idle");
     setprop(ROOT ~ "/log", "");
+    setprop(ROOT ~ "/sidecar/heartbeat", -1);
+    setprop(ROOT ~ "/sidecar/mode", "");
+    setprop(ROOT ~ "/backend", "Not running — launch run-mac.command");
+    # Interaction mode + quiet-night easter-egg inputs. Seeded so the dialog's
+    # live bindings and the sidecar both see well-formed values at startup; the
+    # add-on refreshes /local-hour from sim time, the sidecar writes /controller/name.
+    setprop(ROOT ~ "/mode", "normal");
+    setprop(ROOT ~ "/local-hour", 12);
+    setprop(ROOT ~ "/controller/name", "");
+    setprop(ROOT ~ "/airport/icao", "");
+    setprop(ROOT ~ "/airport/name", "");
+    # Best-effort nearest-airport publication for 'diversion' phrasing. Seeded
+    # empty so the sidecar always sees well-formed (possibly blank) props.
+    setprop(ROOT ~ "/nearest-airport/icao", "");
+    setprop(ROOT ~ "/nearest-airport/name", "");
+    # Mode B live traffic display — seed so the dialog's live bindings render
+    # before the sidecar writes the first sequencing summary.
+    setprop(ROOT ~ "/traffic/summary", "");
+    setprop(ROOT ~ "/traffic/count", 0);
+    # Ambient-chatter line published by the sidecar; seeded blank so the dialog's
+    # live "Chatter: %s" binding renders before the first chatter line arrives.
+    setprop(ROOT ~ "/chatter", "");
+    # Airspace classification + advisory published by publish_airspace(); seeded
+    # with the conservative default class "G" (uncontrolled) and no warning so the
+    # dialog's live bindings and the sidecar's airspace_check both see well-formed
+    # values before the first publish.
+    setprop(ROOT ~ "/airspace/class", "G");
+    setprop(ROOT ~ "/airspace/warning", "");
+    # Training kneeboard reference text published by the sidecar (e.g. on a
+    # "kneeboard" / "scenario" / "career" request); seeded blank so the dialog's
+    # live read-only Kneeboard textbox renders before the first publish.
+    setprop(ROOT ~ "/kneeboard", "");
+    # Guardrail validation warning published by the sidecar; seeded blank so the
+    # dialog's live "Guardrail: %s" binding renders before (and whenever there is
+    # no) validation issue. Usually blank.
+    setprop(ROOT ~ "/guardrail", "");
+    # Language + region config read by the sidecar; seeded with the contract
+    # defaults ("en"/"us") so the sidecar and the dialog's helpers both see
+    # well-formed values before the user changes them.
+    setprop(ROOT ~ "/language", "en");
+    setprop(ROOT ~ "/region", "us");
+    # Dialog open/close tracking for the phase-change rebuild guard.
+    # Set to 1 by <nasal><open> in ai-atc.xml, cleared by <nasal><close>.
+    setprop(ROOT ~ "/dialog-open", 0);
 };
 
 # Append one line to the scrolling transcript.
+var LOG_MAX_LINES = 200;
 var append_log = func(line) {
     if (line == nil or line == "") return;
     var existing = getprop(ROOT ~ "/log");
     if (existing == nil) existing = "";
-    setprop(ROOT ~ "/log", existing ~ line ~ "\n");
+    var combined = existing ~ line ~ "\n";
+    # Cap the transcript so the property cannot grow unbounded over a long
+    # session: keep only the last LOG_MAX_LINES lines. The trailing "\n" makes
+    # split() yield a final empty element, so re-join with "\n" as a separator
+    # (rather than appending "\n" to each) to preserve a single trailing newline.
+    var lines = split("\n", combined);
+    if (size(lines) > LOG_MAX_LINES) {
+        lines = subvec(lines, size(lines) - LOG_MAX_LINES);
+        combined = "";
+        var first = 1;
+        foreach (var l; lines) {
+            if (first) { combined = l; first = 0; }
+            else { combined = combined ~ "\n" ~ l; }
+        }
+    }
+    setprop(ROOT ~ "/log", combined);
 };
 
-# Fire a request to the sidecar. Called from the menu and dialog bindings.
+# ---------------------------------------------------------------------------
+# Phase-to-button mapping (Stage 2 state-aware panel).
+# Each entry is the list of primary request buttons for that flight phase.
+# Emergency buttons (Mayday, Pan-Pan, Gear Emergency, Min Fuel, Diversion,
+# Go-Around, Sq 7500/7600/7700) are in the static XML group and are always
+# visible — they do NOT appear in this map.
+# ---------------------------------------------------------------------------
+var _PHASE_BUTTONS = {
+    "preflight": [
+        {legend: "IFR Clearance",   type: "ifr_clearance"},
+        {legend: "Radio Check",     type: "radio_check"},
+        {legend: "SimBrief",        type: "simbrief"},
+        {legend: "FSS Brief",       type: "fss_briefing"},
+        {legend: "Airspace",        type: "airspace_check"},
+        {legend: "Kneeboard",       type: "kneeboard"}
+    ],
+    "clearance": [
+        {legend: "IFR Clearance",   type: "ifr_clearance"},
+        {legend: "Radio Check",     type: "radio_check"}
+    ],
+    "pushback": [
+        {legend: "Pushback",        type: "pushback"},
+        {legend: "Radio Check",     type: "radio_check"}
+    ],
+    "taxi_out": [
+        {legend: "Taxi",            type: "taxi"},
+        {legend: "Intersection Dep",type: "intersection_departure"},
+        {legend: "CTAF",            type: "ctaf"},
+        {legend: "Radio Check",     type: "radio_check"}
+    ],
+    "takeoff": [
+        {legend: "Takeoff",         type: "takeoff"},
+        {legend: "Intersection Dep",type: "intersection_departure"},
+        {legend: "Radio Check",     type: "radio_check"}
+    ],
+    "departure": [
+        {legend: "Radio Check",     type: "radio_check"},
+        {legend: "Wx Deviation",    type: "weather_deviation"},
+        {legend: "PIREP",           type: "pirep"}
+    ],
+    "climb": [
+        {legend: "Radio Check",     type: "radio_check"},
+        {legend: "Wx Deviation",    type: "weather_deviation"},
+        {legend: "PIREP",           type: "pirep"},
+        {legend: "Windshear",       type: "windshear"}
+    ],
+    "cruise": [
+        {legend: "Radio Check",     type: "radio_check"},
+        {legend: "Wx Deviation",    type: "weather_deviation"},
+        {legend: "PIREP",           type: "pirep"},
+        {legend: "Windshear",       type: "windshear"}
+    ],
+    "descent": [
+        {legend: "Holding",         type: "holding"},
+        {legend: "Expect Apch",     type: "expect_approach"},
+        {legend: "Arrival Clrnc",   type: "arrival_clearance"},
+        {legend: "Flow Control",    type: "flow_control"},
+        {legend: "Radio Check",     type: "radio_check"},
+        {legend: "Windshear",       type: "windshear"}
+    ],
+    "arrival": [
+        {legend: "Approach",        type: "approach"},
+        {legend: "ILS",             type: "ils"},
+        {legend: "Field in Sight",  type: "airfield_in_sight"},
+        {legend: "Holding",         type: "holding"},
+        {legend: "Arrival Clrnc",   type: "arrival_clearance"},
+        {legend: "Radio Check",     type: "radio_check"}
+    ],
+    "approach": [
+        {legend: "Approach",        type: "approach"},
+        {legend: "ILS",             type: "ils"},
+        {legend: "Field in Sight",  type: "airfield_in_sight"},
+        {legend: "LAHSO",           type: "lahso"},
+        {legend: "Radio Check",     type: "radio_check"}
+    ],
+    "landing": [
+        {legend: "LAHSO",           type: "lahso"},
+        {legend: "Go-Around",       type: "go_around"},
+        {legend: "Radio Check",     type: "radio_check"}
+    ],
+    "taxi_in": [
+        {legend: "Taxi",            type: "taxi"},
+        {legend: "CTAF",            type: "ctaf"},
+        {legend: "Radio Check",     type: "radio_check"}
+    ],
+    "parked": [
+        {legend: "Kneeboard",       type: "kneeboard"},
+        {legend: "Career",          type: "career"},
+        {legend: "Scenario",        type: "scenario"},
+        {legend: "Radio Check",     type: "radio_check"}
+    ]
+};
+
+# ---------------------------------------------------------------------------
+# Stage 3 — per-phase color encoding for the "── Requests ──" header label.
+# Values are 0.0–1.0 RGB floats derived from the plan's hex palette:
+#   preflight/clearance  → Blue   #3a6ea5
+#   pushback/taxi_out    → Amber  #b8860b
+#   takeoff/departure    → Orange #cc5500
+#   climb/cruise/descent → Green  #2e7d32
+#   arrival/approach     → Purple #6a1f8a
+#   landing/taxi_in      → Teal   #00695c
+#   parked               → DkGrey #546e7a
+# Any unmapped phase falls back to _phase_color_default (dark grey).
+# ---------------------------------------------------------------------------
+var _phase_color = {
+    "preflight":  {r: 0.227, g: 0.431, b: 0.647},
+    "clearance":  {r: 0.227, g: 0.431, b: 0.647},
+    "pushback":   {r: 0.722, g: 0.525, b: 0.043},
+    "taxi_out":   {r: 0.722, g: 0.525, b: 0.043},
+    "takeoff":    {r: 0.800, g: 0.333, b: 0.000},
+    "departure":  {r: 0.800, g: 0.333, b: 0.000},
+    "climb":      {r: 0.180, g: 0.490, b: 0.196},
+    "cruise":     {r: 0.180, g: 0.490, b: 0.196},
+    "descent":    {r: 0.180, g: 0.490, b: 0.196},
+    "arrival":    {r: 0.416, g: 0.122, b: 0.541},
+    "approach":   {r: 0.416, g: 0.122, b: 0.541},
+    "landing":    {r: 0.000, g: 0.412, b: 0.361},
+    "taxi_in":    {r: 0.000, g: 0.412, b: 0.361},
+    "parked":     {r: 0.329, g: 0.431, b: 0.478},
+};
+var _phase_color_default = {r: 0.329, g: 0.431, b: 0.478};
+
+# Populate the <group name="phase-buttons"> in the dialog property tree for
+# the given phase. FG stores the dialog property tree at
+# /sim/gui/dialogs/ai-atc/ after the first dialog-show; dialog-show then
+# rebuilds PUI widgets from that tree, so modifying the tree before each
+# show is the mechanism that delivers the compact phase-only button set.
+var _build_phase_buttons = func(phase) {
+    var dlg = props.globals.getNode("/sim/gui/dialogs/ai-atc");
+    if (dlg == nil) return;  # tree not loaded yet; silent no-op
+    # Find the phase-buttons group by its <name> child.
+    var phase_grp = nil;
+    foreach (var g; dlg.getChildren("group")) {
+        var nm = g.getNode("name");
+        if (nm != nil and nm.getValue() == "phase-buttons") {
+            phase_grp = g;
+            break;
+        }
+    }
+    if (phase_grp == nil) return;
+    # Remove any buttons from a previous phase.
+    foreach (var b; phase_grp.getChildren("button")) {
+        phase_grp.removeChild(b);
+    }
+    # Look up the button list; fall back to empty if phase is unrecognised.
+    var btn_list = _PHASE_BUTTONS[phase];
+    if (btn_list == nil) btn_list = [];
+    # Write button nodes in a 2-column table layout (row/col attributes).
+    var row = 0;
+    var col = 0;
+    foreach (var bdata; btn_list) {
+        var btn = phase_grp.addChild("button");
+        btn.getNode("legend",     1).setValue(bdata.legend);
+        btn.getNode("pref-width", 1).setIntValue(185);
+        btn.getNode("row",        1).setIntValue(row);
+        btn.getNode("col",        1).setIntValue(col);
+        var bd = btn.addChild("binding");
+        bd.getNode("command", 1).setValue("nasal");
+        bd.getNode("script",  1).setValue('aiatc.request("' ~ bdata.type ~ '");');
+        col = col + 1;
+        if (col >= 2) { col = 0; row = row + 1; }
+    }
+    # Stage 3: apply the per-phase color to the <text name="phase-label"> header.
+    # The color node is written into the dialog property tree here, before
+    # dialog-show, so FG reads the updated value when it rebuilds PUI widgets.
+    var clr = _phase_color[phase];
+    if (clr == nil) clr = _phase_color_default;
+    foreach (var t; dlg.getChildren("text")) {
+        var nm = t.getNode("name");
+        if (nm != nil and nm.getValue() == "phase-label") {
+            var col_node = t.getNode("color", 1);
+            col_node.getNode("red",   1).setValue(clr.r);
+            col_node.getNode("green", 1).setValue(clr.g);
+            col_node.getNode("blue",  1).setValue(clr.b);
+            break;
+        }
+    }
+};
+
+# Open the phase-aware dialog (Option A: property-tree population + rebuild).
+# On the very first call the dialog property tree does not exist yet, so we
+# show once to load the XML tree, then immediately close and reopen with the
+# correct phase buttons already written in. Subsequent calls skip the
+# extra show because the tree is already present.
+var open_dialog = func {
+    var phase = getprop(ROOT ~ "/flight-phase") or "preflight";
+    if (props.globals.getNode("/sim/gui/dialogs/ai-atc") == nil) {
+        # First call: load the dialog XML into the property tree.
+        fgcommand("dialog-show", props.Node.new({"dialog-name": "ai-atc"}));
+    }
+    _build_phase_buttons(phase);
+    fgcommand("dialog-close", props.Node.new({"dialog-name": "ai-atc"}));
+    fgcommand("dialog-show",  props.Node.new({"dialog-name": "ai-atc"}));
+};
+
+# ---------------------------------------------------------------------------
+# Watchdog: started when request() fires, cancelled when a reply arrives.
+# ---------------------------------------------------------------------------
+var _watchdog_timer = nil;
+var _readback_timer = nil;
+
+var _cancel_readback_timer = func {
+    if (_readback_timer != nil) {
+        _readback_timer.stop();
+        _readback_timer = nil;
+    }
+};
+
+var _cancel_watchdog = func {
+    if (_watchdog_timer != nil) {
+        _watchdog_timer.stop();
+        _watchdog_timer = nil;
+    }
+};
+
+var _start_watchdog = func {
+    _cancel_watchdog();
+    _watchdog_timer = maketimer(WATCHDOG_SEC, func {
+        _watchdog_timer = nil;
+        var st = getprop(ROOT ~ "/status");
+        if (st == "processing") {
+            setprop(ROOT ~ "/status", "idle");
+            print("[atc] No response from backend — is the sidecar running?");
+            append_log("[atc] No response from backend — is the sidecar running?");
+        }
+    });
+    _watchdog_timer.singleShot = 1;
+    _watchdog_timer.start();
+};
+
+# ---------------------------------------------------------------------------
+# Fire a request to the sidecar. Called from the menu, dialog, and keybinding.
+# ---------------------------------------------------------------------------
 var request = func(req_type) {
     var callsign = getprop(ROOT ~ "/request/callsign");
     if (callsign == nil or callsign == "") {
@@ -51,6 +419,47 @@ var request = func(req_type) {
     setprop(ROOT ~ "/status", "processing");
     setprop(ROOT ~ "/request/trigger", 1);
     append_log("[you] request " ~ req_type ~ " (" ~ callsign ~ ")");
+    _start_watchdog();
+};
+
+# Mode A: set runway[idx]/active to "1" (active) or "0" (inactive). Exposed on
+# globals.aiatc so dialog <checkbox> bindings (which run in the global scope,
+# not the add-on scope) can toggle a runway via aiatc.set_runway_active(idx, on).
+# `on` is coerced to a string "1"/"0" so the sidecar's merge_airport_mailbox
+# sees the exact contract value regardless of how PUI wrote the checkbox state.
+var set_runway_active = func(idx, on) {
+    var pfx = ROOT ~ "/airport/runway[" ~ idx ~ "]";
+    setprop(pfx ~ "/active", on ? "1" : "0");
+};
+
+# Set the controller interaction mode to one of the three contract values.
+# Exposed on globals.aiatc so the dialog's Mode buttons (which run in the global
+# scope, not the add-on scope) can call aiatc.set_mode("student") etc. Any
+# unrecognised token falls back to "normal" so the sidecar never sees an
+# out-of-contract mode value.
+var set_mode = func(m) {
+    if (m != "normal" and m != "student" and m != "checkride") m = "normal";
+    setprop(ROOT ~ "/mode", m);
+};
+
+# Set the UI/phraseology language (e.g. "en", "fr", "de") read by the sidecar.
+# Exposed on globals.aiatc so the dialog's Language buttons (which run in the
+# global scope, not the add-on scope) can call aiatc.set_language("fr") etc. The
+# value is lower-cased and a nil/blank falls back to the contract default "en" so
+# the sidecar never sees an out-of-contract language value.
+var set_language = func(lang) {
+    if (lang == nil or lang == "") lang = "en";
+    setprop(ROOT ~ "/language", string.lc(lang));
+};
+
+# Set the phraseology region (e.g. "us", "uk") read by the sidecar. Exposed on
+# globals.aiatc so the dialog's Region buttons (which run in the global scope,
+# not the add-on scope) can call aiatc.set_region("uk") etc. The value is
+# lower-cased and a nil/blank falls back to the contract default "us" so the
+# sidecar never sees an out-of-contract region value.
+var set_region = func(reg) {
+    if (reg == nil or reg == "") reg = "us";
+    setprop(ROOT ~ "/region", string.lc(reg));
 };
 
 # Publish runway + frequency data from airportinfo() into the /ai-atc/airport/
@@ -58,42 +467,237 @@ var request = func(req_type) {
 var publish_airport_data = func(icao) {
     if (icao == nil or icao == "") return;
     var info = airportinfo(icao);
-    if (info == nil) return;
+    if (info == nil) {
+        print("[AI ATC] airportinfo returned nil for " ~ icao ~ "; skipping airport data publish");
+        return;
+    }
 
-    # Frequencies
-    var freqs = ["ground", "tower", "atis", "approach", "departure"];
-    foreach (var fname; freqs) {
-        var f = info.comms(fname);
-        if (f != nil and size(f) > 0) {
-            setprop(ROOT ~ "/airport/freq/" ~ fname, sprintf("%.2f", f[0].frequency / 1000.0));
+    # Airport identity for the dialog header.
+    setprop(ROOT ~ "/airport/icao", info.id);
+    setprop(ROOT ~ "/airport/name", info.name);
+
+    # Frequencies — comms() may not be available for all airports; guard each call.
+    var freq_types = ["ground", "tower", "atis", "approach", "departure"];
+    var _err = [];
+    foreach (var fname; freq_types) {
+        var f = nil;
+        _err = [];
+        call(func { f = info.comms(fname); }, nil, _err);
+        if (size(_err) == 0 and f != nil and size(f) > 0) {
+            _err = [];
+            var hz = nil;
+            call(func { hz = f[0].frequency; }, nil, _err);
+            if (size(_err) == 0 and hz != nil)
+                setprop(ROOT ~ "/airport/freq/" ~ fname, sprintf("%.2f", hz / 1000.0));
         }
     }
 
-    # Runways
-    var rwy_list = info.runways;
+    # Runways — clear stale entries first
+    var old_count = getprop(ROOT ~ "/airport/runway_count");
+    if (old_count == nil) old_count = 0;
+    var i = 0;
+    while (i < old_count) {
+        var pfx = ROOT ~ "/airport/runway[" ~ i ~ "]";
+        setprop(pfx ~ "/id", "");
+        i += 1;
+    }
+
+    var rwy_list = nil;
+    _err = [];
+    call(func { rwy_list = info.runways; }, nil, _err);
     if (rwy_list == nil) return;
     var n = 0;
-    foreach (var rwy; keys(rwy_list)) {
-        var r = rwy_list[rwy];
+    # Sort the runway keys so runway[N] indices are stable across reloads and
+    # airport changes; keys() order is otherwise non-deterministic.
+    var rwy_keys = sort(keys(rwy_list), func(a, b) { cmp(a, b); });
+    foreach (var rwy_key; rwy_keys) {
+        var r = rwy_list[rwy_key];
+        if (r == nil) continue;
         var pfx = ROOT ~ "/airport/runway[" ~ n ~ "]";
-        setprop(pfx ~ "/id",      r.id);
-        setprop(pfx ~ "/heading", r.heading);
-        setprop(pfx ~ "/thr_lat", r.lat);
-        setprop(pfx ~ "/thr_lon", r.lon);
-        setprop(pfx ~ "/length",  r.length);
-        var ils = r.ils;
-        if (ils != nil) {
-            setprop(pfx ~ "/ils_freq", sprintf("%.2f", ils.frequency / 1000.0));
-        } else {
-            setprop(pfx ~ "/ils_freq", "");
-        }
-        n += 1;
+        _err = [];
+        call(func {
+            setprop(pfx ~ "/id",      r.id);
+            setprop(pfx ~ "/heading", r.heading);
+            setprop(pfx ~ "/thr_lat", r.lat);
+            setprop(pfx ~ "/thr_lon", r.lon);
+            setprop(pfx ~ "/length",  r.length);
+            var ils = r.ils;
+            if (ils != nil) {
+                setprop(pfx ~ "/ils_freq", sprintf("%.2f", ils.frequency / 1000.0));
+            } else {
+                setprop(pfx ~ "/ils_freq", "");
+            }
+            # Mode A: publish per-runway active state, defaulting to "1"
+            # (active) unless a stored config value already exists for this
+            # slot (e.g. the user previously unchecked it in the dialog).
+            var active = getprop(pfx ~ "/active");
+            if (active == nil or active == "") setprop(pfx ~ "/active", "1");
+        }, nil, _err);
+        if (size(_err) == 0) n += 1;
     }
     setprop(ROOT ~ "/airport/runway_count", n);
 };
 
+# Best-effort: publish the nearest airport to /ai-atc/nearest-airport/{icao,name}
+# so the sidecar can phrase a 'diversion' request as "...divert to KSQL San
+# Carlos...". Uses FlightGear's airport DB (geo.aircraft_position +
+# findAirportsWithinRange, which returns nearest-first). The whole body runs
+# inside a call() guard: if any of those APIs are unavailable this simply does
+# nothing and never throws, leaving the seeded "" defaults in place.
+var publish_nearest_airport = func {
+    var _err = [];
+    call(func {
+        var pos = geo.aircraft_position();
+        if (pos == nil) return;
+        var list = findAirportsWithinRange(pos, 100);
+        if (list == nil or size(list) == 0) return;
+        var ap = list[0];   # nearest-first ordering
+        if (ap == nil) return;
+        if (ap.id != nil)   setprop(ROOT ~ "/nearest-airport/icao", ap.id);
+        if (ap.name != nil) setprop(ROOT ~ "/nearest-airport/name", ap.name);
+    }, nil, _err);
+    # _err intentionally ignored — nearest-airport data is optional.
+};
+
+# Best-effort: publish the aircraft's current airspace classification to
+# /ai-atc/airspace/class (default "G") and a human-readable advisory to
+# /ai-atc/airspace/warning (default ""). The base FlightGear package does not
+# expose a reliable nearest-airspace-class property, so this is intentionally
+# conservative: it derives a coarse class from real, deterministic NAS rules
+# (Class A is 18,000 ft MSL to FL600) when altitude is available, and otherwise
+# leaves the seeded defaults in place rather than fabricating a lateral class.
+# The whole body runs inside a call() guard so a missing or odd property simply
+# does nothing and never throws.
+var publish_airspace = func {
+    var _err = [];
+    call(func {
+        # Start from whatever is already published (seeded "G"), never blank.
+        var cls = getprop(ROOT ~ "/airspace/class");
+        if (cls == nil or cls == "") cls = "G";
+        var warn = "";
+
+        # Coarse MSL-altitude rule: at/above 18,000 ft is Class A in the US NAS,
+        # where an IFR clearance is required. Below that we cannot reliably
+        # classify lateral airspace from base properties, so keep the default.
+        var alt_ft = getprop("/position/altitude-ft");
+        if (alt_ft != nil and alt_ft >= 18000) {
+            cls = "A";
+            warn = "Class A: IFR clearance required at/above FL180";
+        } else {
+            cls = "G";
+        }
+
+        setprop(ROOT ~ "/airspace/class", cls);
+        setprop(ROOT ~ "/airspace/warning", warn);
+    }, nil, _err);
+    # _err intentionally ignored — airspace data is best-effort/optional.
+};
+
+# Best-effort: publish the active flightplan from FlightGear's route-manager into
+# the /ai-atc/request/{destination,route,altitude} mailbox so the sidecar can
+# phrase an 'ifr_clearance' (e.g. "cleared to KLAX via DCT, climb and maintain
+# 8000"). Every read is wrapped in a call() guard: if the route-manager is empty
+# or an API is unavailable this simply leaves the seeded "" defaults in place and
+# never throws. The route-manager's departure runway also seeds /request/runway,
+# but only when the pilot hasn't already typed one into the dialog.
+var publish_flightplan = func {
+    var _err = [];
+    call(func {
+        var dest = getprop("/autopilot/route-manager/destination/airport");
+        if (dest != nil and dest != "")
+            setprop(ROOT ~ "/request/destination", dest);
+
+        var alt = getprop("/autopilot/route-manager/cruise/altitude-ft");
+        if (alt != nil and alt != "" and alt != 0)
+            setprop(ROOT ~ "/request/altitude", sprintf("%d", int(alt)));
+
+        # Seed the requested runway from the route-manager's departure runway,
+        # but only if the pilot hasn't already typed one into the dialog.
+        var dep_rwy = getprop("/autopilot/route-manager/departure/runway");
+        var cur_rwy = getprop(ROOT ~ "/request/runway");
+        if (dep_rwy != nil and dep_rwy != "" and (cur_rwy == nil or cur_rwy == ""))
+            setprop(ROOT ~ "/request/runway", dep_rwy);
+
+        # Route string: prefer the route-manager's published route text when
+        # present, else fall back to "DCT" (direct) so the sidecar always sees a
+        # well-formed route for the IFR clearance.
+        var route = getprop("/autopilot/route-manager/route");
+        if (route == nil or route == "") route = "DCT";
+        setprop(ROOT ~ "/request/route", route);
+    }, nil, _err);
+    # _err intentionally ignored — flightplan data is best-effort/optional.
+};
+
+# Best-effort: publish the sim's current local hour (0-23) to /ai-atc/local-hour
+# so the sidecar can detect "quiet night" hours for the reflective-mood easter
+# egg. Prefers /sim/time/local-day-seconds (sim local time at the aircraft),
+# falling back to /sim/time/utc/hour. The whole body runs inside a call() guard,
+# so a missing or odd property simply leaves the seeded default in place and
+# never throws.
+var publish_local_hour = func {
+    var _err = [];
+    call(func {
+        var hour = nil;
+        var secs = getprop("/sim/time/local-day-seconds");
+        if (secs != nil) {
+            hour = int(math.mod(int(secs / 3600), 24));
+        } else {
+            var uh = getprop("/sim/time/utc/hour");
+            if (uh != nil) hour = int(math.mod(int(uh), 24));
+        }
+        if (hour == nil) return;
+        if (hour < 0) hour += 24;
+        setprop(ROOT ~ "/local-hour", hour);
+    }, nil, _err);
+    # _err intentionally ignored — local-hour is a best-effort easter-egg input.
+};
+
+# ---------------------------------------------------------------------------
+# Backend heartbeat watcher — updates /ai-atc/backend status string.
+# ---------------------------------------------------------------------------
+var _last_heartbeat = -2;  # sentinel: -2 = never seen, -1 = FG default
+var _heartbeat_timer = nil;
+# Periodic timer that republishes /ai-atc/local-hour from sim time (~60 s).
+var _local_hour_timer = nil;
+# Periodic timer that republishes /ai-atc/airspace/{class,warning} (~45 s).
+var _airspace_timer = nil;
+
+var _update_backend_status = func {
+    var hb = getprop(ROOT ~ "/sidecar/heartbeat");
+    var mode = getprop(ROOT ~ "/sidecar/mode");
+    if (hb == nil) hb = -1;
+    if (mode == nil) mode = "";
+
+    if (hb == _last_heartbeat or hb < 0) {
+        # Heartbeat not advancing (or never set by sidecar) — backend is gone.
+        setprop(ROOT ~ "/backend", "Not running — launch run-mac.command");
+    } elsif (mode == "ai") {
+        setprop(ROOT ~ "/backend", "Connected (AI)");
+    } else {
+        setprop(ROOT ~ "/backend", "Connected (offline templates)");
+    }
+    _last_heartbeat = hb;
+};
+
 var main = func(addon) {
     _set_defaults();
+
+    # Expose request() in the global namespace so dialog <command>nasal</command>
+    # bindings (which run in the global scope, not the add-on scope) can reach it
+    # via the short name  aiatc.request("pushback")  etc.
+    globals.aiatc = { request: request, set_runway_active: set_runway_active, set_mode: set_mode, set_language: set_language, set_region: set_region, open_dialog: open_dialog };
+
+    # Rebuild the dialog when the sidecar advances the flight phase (Option A:
+    # close + reopen so FG rebuilds PUI widgets with the new phase's buttons).
+    # Guard: only rebuild when the dialog is currently open so phase changes
+    # during a closed dialog do not silently pop it open.
+    append(_listeners, setlistener(ROOT ~ "/flight-phase", func(n) {
+        if (!getprop(ROOT ~ "/dialog-open")) return;
+        var phase = n.getValue() or "preflight";
+        _build_phase_buttons(phase);
+        fgcommand("dialog-close", props.Node.new({"dialog-name": "ai-atc"}));
+        fgcommand("dialog-show",  props.Node.new({"dialog-name": "ai-atc"}));
+    }, 0, 0));
 
     # Surface each new clearance in the transcript as the sidecar writes it.
     append(_listeners, setlistener(ROOT ~ "/response/text", func(n) {
@@ -101,20 +705,105 @@ var main = func(addon) {
         if (text != nil and text != "") append_log("[atc] " ~ text);
     }, 0, 0));
 
-    # Clear the processing flag once a response is ready.
+    # Cancel watchdog and clear processing flag once a response is ready.
+    # Stage 4: after ATC transmits (RESP_READY=1), wait 3.5 s then fire
+    # auto_readback so the pilot's readback is spoken and logged automatically.
+    # Guard: cancel any stale timer first so overlapping responses don't stack.
+    # The auto_readback request itself sets RESP_READY=1 again, which would
+    # retrigger — skip scheduling another readback when the text already is one.
     append(_listeners, setlistener(ROOT ~ "/response/ready", func(n) {
-        if (n.getBoolValue()) setprop(ROOT ~ "/status", "idle");
+        if (n.getBoolValue()) {
+            _cancel_watchdog();
+            setprop(ROOT ~ "/status", "idle");
+            var resp = getprop(ROOT ~ "/response/text") or "";
+            if (size(resp) >= 10 and left(resp, 10) != "[Readback]") {
+                _cancel_readback_timer();
+                _readback_timer = maketimer(3.5, func {
+                    _readback_timer = nil;
+                    aiatc.request("auto_readback");
+                });
+                _readback_timer.singleShot = 1;
+                _readback_timer.start();
+            }
+        }
     }, 0, 0));
 
-    # Publish airport data for the current airport at startup
+    # Surface error status in log and reset to idle.
+    append(_listeners, setlistener(ROOT ~ "/status", func(n) {
+        if (n.getValue() == "error") {
+            print("[atc] Backend reported an error; resetting to idle.");
+            append_log("[atc] Backend reported an error.");
+            _cancel_watchdog();
+            setprop(ROOT ~ "/status", "idle");
+        }
+    }, 0, 0));
+
+    # Re-publish airport data when the user changes airport.
+    append(_listeners, setlistener("/sim/presets/airport-id", func(n) {
+        var icao = n.getValue();
+        if (icao != nil and icao != "") {
+            publish_airport_data(icao);
+            publish_nearest_airport();   # best-effort; never throws
+            publish_flightplan();        # best-effort IFR flightplan; never throws
+        }
+    }, 0, 0));
+
+    # Heartbeat polling timer: check every HEARTBEAT_STALE_SEC seconds.
+    _heartbeat_timer = maketimer(HEARTBEAT_STALE_SEC, _update_backend_status);
+    _heartbeat_timer.start();
+
+    # Publish the sim local hour now and refresh it every ~60 s so the sidecar's
+    # quiet-night ("reflective" mood) easter egg always sees a current value.
+    publish_local_hour();
+    _local_hour_timer = maketimer(60, publish_local_hour);
+    _local_hour_timer.start();
+
+    # Publish the airspace class/advisory now and refresh it every ~45 s so the
+    # dialog's live bindings and the sidecar's airspace_check see a current value.
+    publish_airspace();
+    _airspace_timer = maketimer(45, publish_airspace);
+    _airspace_timer.start();
+
+    # Publish airport data for the current airport at startup.
     var icao = getprop("/sim/presets/airport-id");
     publish_airport_data(icao);
+    publish_nearest_airport();   # best-effort nearest-airport for diversions
+    publish_flightplan();        # best-effort IFR flightplan for ifr_clearance
 
-    print("[AI ATC] addon loaded, version " ~ addon.version);
+    # Initial backend status check.
+    _update_backend_status();
+
+    # addon.version is an FG Version ghost; concatenating it directly prints
+    # garbage. Stringify defensively so this never throws if .str() is absent.
+    var verstr = "?";
+    if (addon != nil and addon.version != nil) {
+        if (typeof(addon.version) == "scalar") {
+            verstr = addon.version;
+        } else {
+            var _verr = [];
+            call(func { verstr = addon.version.str(); }, nil, nil, nil, _verr);
+            if (size(_verr) != 0) verstr = "?";
+        }
+    }
+    print("[AI ATC] addon loaded, version " ~ verstr);
 };
 
 var unload = func(addon) {
     foreach (var l; _listeners) removelistener(l);
     _listeners = [];
+    _cancel_watchdog();
+    _cancel_readback_timer();
+    if (_heartbeat_timer != nil) {
+        _heartbeat_timer.stop();
+        _heartbeat_timer = nil;
+    }
+    if (_local_hour_timer != nil) {
+        _local_hour_timer.stop();
+        _local_hour_timer = nil;
+    }
+    if (_airspace_timer != nil) {
+        _airspace_timer.stop();
+        _airspace_timer = nil;
+    }
     print("[AI ATC] addon unloaded");
 };

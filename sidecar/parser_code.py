@@ -120,9 +120,15 @@ def _freq_to_str(raw: str | None) -> str | None:
 def _read_bytes(xml_source: str | bytes | PathLike[str]) -> bytes:
     """Return the raw groundnet bytes from a path, raw XML text, or bytes."""
     if isinstance(xml_source, bytes):
+        if not xml_source.strip():
+            raise ParseError("empty groundnet source")
         return xml_source
-    if isinstance(xml_source, str) and xml_source.lstrip().startswith("<"):
-        return xml_source.encode("utf-8")
+    if isinstance(xml_source, str):
+        stripped = xml_source.strip()
+        if not stripped:
+            raise ParseError("empty groundnet source")
+        if stripped.startswith("<"):
+            return xml_source.encode("utf-8")
     try:
         with open(xml_source, "rb") as fh:  # path-like or filename string
             return fh.read()
@@ -234,6 +240,7 @@ def _runways_from_airportinfo(airportinfo: dict) -> list[Runway]:
                 length=_to_float(str(rw.get("length", "")), what="runway length"),
                 ils_freq=str(ils) if ils is not None else None,
                 entry_nodes=[int(n) for n in (rw.get("entry_nodes") or [])],
+                active=_truthy(str(rw.get("active", ""))),
             )
         )
     return runways
@@ -273,10 +280,14 @@ def parse_groundnet(
             malformed numeric/coordinate data.
     """
     raw_bytes = _read_bytes(xml_source)
+    if not raw_bytes.strip():
+        raise ParseError(f"empty groundnet XML for {icao}")
     try:
         root = ET.fromstring(raw_bytes)
     except ET.ParseError as exc:
-        raise ParseError(f"malformed groundnet XML: {exc}") from exc
+        raise ParseError(
+            f"malformed (not well-formed) groundnet XML for {icao}: {exc}"
+        ) from exc
     if root.tag != "groundnet":
         raise ParseError(f"expected <groundnet> root, got <{root.tag}>")
 

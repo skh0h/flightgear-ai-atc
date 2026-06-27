@@ -247,6 +247,60 @@ def test_quota_429_raises_offline_error() -> None:
 
 
 # ---------------------------------------------------------------------------
+# (e2) Non-offline ClientError (e.g. 400/404) -> OfflineError (graceful degrade)
+# ---------------------------------------------------------------------------
+
+
+def test_non_offline_client_error_400_raises_offline_error() -> None:
+    """ClientError 400 (malformed schema) -> OfflineError, not a raw provider error.
+
+    A 400 is not in the offline set (401/403/429) and is not retryable (5xx),
+    but it must still degrade to OfflineError so callers (phrase_online) fall
+    back to the deterministic offline template instead of crashing on a raw
+    google.genai ClientError. The original error is preserved as __cause__.
+    """
+    from google.genai import errors
+
+    bad_request = errors.ClientError(400, {"error": {"message": "Invalid JSON schema"}})
+
+    mock_models = MagicMock()
+    mock_models.generate_content.side_effect = bad_request
+    mock_client = MagicMock()
+    mock_client.models = mock_models
+
+    gc = GeminiClient(_make_settings())
+
+    with patch("sidecar.gemini_client.GeminiClient._get_client", return_value=mock_client):
+        with pytest.raises(OfflineError) as exc_info:
+            gc.generate("prompt", _SampleSchema, _sleep=_noop_sleep)
+
+    # generate_content is called once: a 400 is not retried.
+    assert mock_models.generate_content.call_count == 1
+    # Original provider error preserved as the cause for debugging.
+    assert isinstance(exc_info.value.__cause__, errors.ClientError)
+
+
+def test_non_offline_client_error_404_raises_offline_error() -> None:
+    """ClientError 404 (bad model) -> OfflineError rather than leaking out raw."""
+    from google.genai import errors
+
+    not_found = errors.ClientError(404, {"error": {"message": "model not found"}})
+
+    mock_models = MagicMock()
+    mock_models.generate_content.side_effect = not_found
+    mock_client = MagicMock()
+    mock_client.models = mock_models
+
+    gc = GeminiClient(_make_settings())
+
+    with patch("sidecar.gemini_client.GeminiClient._get_client", return_value=mock_client):
+        with pytest.raises(OfflineError) as exc_info:
+            gc.generate("prompt", _SampleSchema, _sleep=_noop_sleep)
+
+    assert isinstance(exc_info.value.__cause__, errors.ClientError)
+
+
+# ---------------------------------------------------------------------------
 # (f) Transient 5xx -> retry, then success; backoff is no-op
 # ---------------------------------------------------------------------------
 

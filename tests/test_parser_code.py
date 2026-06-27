@@ -75,6 +75,21 @@ def test_parse_error_on_malformed_xml() -> None:
         parse_groundnet("<groundnet><TaxiNodes><node", "BAD")
 
 
+def test_parse_error_on_empty_string() -> None:
+    with pytest.raises(ParseError, match="empty"):
+        parse_groundnet("", "BAD")
+
+
+def test_parse_error_on_whitespace_only() -> None:
+    with pytest.raises(ParseError, match="empty"):
+        parse_groundnet("   \n\t  ", "BAD")
+
+
+def test_parse_error_on_malformed_xml_has_helpful_message() -> None:
+    with pytest.raises(ParseError, match="(?i)malformed.*ZZZZ"):
+        parse_groundnet("<groundnet><node", "ZZZZ")
+
+
 def test_parse_error_on_wrong_root() -> None:
     with pytest.raises(ParseError):
         parse_groundnet("<notgroundnet/>", "BAD")
@@ -111,6 +126,20 @@ def test_airportinfo_merges_runways_and_freq_override() -> None:
     assert pic.runways[0].ils_freq == "111.70"
     assert pic.runways[0].entry_nodes == [209, 210]
     assert pic.frequencies.ground == "121.80"
+
+
+def test_airportinfo_runway_active_flag_defaults_false_and_reads_truthy() -> None:
+    """Mode A: the 'active' flag is read from airportinfo, defaulting to False."""
+    airportinfo = {
+        "runways": [
+            {"id": "28L", "heading": 284.0, "active": "1"},
+            {"id": "10R", "heading": 104.0},  # absent -> inactive
+        ]
+    }
+    pic = parse_groundnet(str(_FIXTURE), "KSFO", airportinfo=airportinfo)
+    by_id = {r.id: r for r in pic.runways}
+    assert by_id["28L"].active is True
+    assert by_id["10R"].active is False
 
 
 def test_accepts_raw_xml_text_and_bytes() -> None:

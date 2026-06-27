@@ -71,6 +71,11 @@ class Runway(BaseModel):
     length: float = 0.0
     ils_freq: Optional[str] = None
     entry_nodes: list[int] = Field(default_factory=list)
+    # Mode A: whether this runway end is currently active for departures.
+    # Backward-compatible default (``False``): old cached pictures without the
+    # field load cleanly, and runway selection falls back to ALL runways when
+    # none are marked active (see ``select_departure_runway``).
+    active: bool = False
 
 
 class Frequencies(BaseModel):
@@ -125,6 +130,23 @@ class AirportPicture(BaseModel):
     # JSON serialises the int keys as strings; Pydantic coerces them back on
     # load, so model_dump_json()/model_validate_json() round-trips cleanly.
     taxi_graph: dict[int, list[int]] = Field(default_factory=dict)
+
+
+class TrafficSnapshot(BaseModel):
+    """A single live AI aircraft on the ground, snapped to the taxi network.
+
+    Mode B data-only model (deliberately NOT part of ``AIAirportResponse`` —
+    the Gemini schema is untouched).  ``node_index``/``snap_dist_m`` are filled
+    in by the sidecar after snapping the raw ``/ai/models`` position to the
+    nearest taxi node.
+    """
+
+    callsign: str = ""
+    lat: float
+    lon: float
+    heading: float = 0.0
+    node_index: Optional[int] = None
+    snap_dist_m: float = 0.0
 
 
 def build_taxi_graph(
