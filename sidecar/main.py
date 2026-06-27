@@ -27,6 +27,7 @@ import time
 from collections.abc import Callable
 
 from sidecar import (
+    briefing,
     career,
     coach,
     guardrail,
@@ -89,6 +90,10 @@ REQ_ROUTE = "/ai-atc/request/route"
 REQ_DESTINATION = "/ai-atc/request/destination"
 REQ_ALTITUDE = "/ai-atc/request/altitude"
 REQ_SQUAWK = "/ai-atc/request/squawk"
+# Phase 7 / Stage-1 enrichment: holding fix ident and expect-further-clearance
+# time written by Nasal.  Absent/empty values are handled by ``... or ""``.
+REQ_HOLD_FIX = "/ai-atc/request/hold_fix"
+REQ_EFC = "/ai-atc/request/efc"
 
 # --- Phase 8: grounding / data integrations ---------------------------------
 # Nasal (or a future grounding helper) publishes the current airspace class and
@@ -589,6 +594,67 @@ class Sidecar:
             except Exception:
                 _log.debug("airspace check read failed", exc_info=True)
 
+        # Stage-1 enrichments ------------------------------------------------
+
+        # FSS briefing path: gather origin ICAO, destination, route, and METAR
+        # wind; assemble a full multi-section briefing via the pure briefing
+        # module and store it in ``remarks`` so phrase_offline can voice it.
+        if eff_type == "fss_briefing":
+            try:
+                fss_dest = _clean_fg_str(self.bridge.get(REQ_DESTINATION) or "")
+                fss_route = _clean_fg_str(self.bridge.get(REQ_ROUTE) or "")
+                wind = self._fetch_metar_wind(icao) if icao else None
+                fss_metar = (
+                    f"Wind {wind[0]:.0f} at {wind[1]:.0f} knots"
+                    if wind is not None
+                    else ""
+                )
+                remarks = briefing.fss_briefing(
+                    icao or "unknown",
+                    fss_dest or "unknown",
+                    metar=fss_metar,
+                    route=fss_route,
+                )
+            except Exception:
+                _log.debug("fss_briefing assembly failed", exc_info=True)
+
+        # Holding fix path: best-effort read of the hold fix ident published by
+        # Nasal.  Absent/empty property is handled by ``... or ""``.
+        hold_fix = ""
+        if eff_type == "holding":
+            try:
+                hold_fix = _clean_fg_str(self.bridge.get(REQ_HOLD_FIX) or "")
+            except Exception:
+                _log.debug("holding fix read failed", exc_info=True)
+
+        # Flow-control EFC path: best-effort read of the expect-further-clearance
+        # time or EDCT wheels-up window published by Nasal.
+        efc = ""
+        if eff_type == "flow_control":
+            try:
+                efc = _clean_fg_str(self.bridge.get(REQ_EFC) or "")
+            except Exception:
+                _log.debug("flow control efc read failed", exc_info=True)
+
+        # Arrival clearance altitude path: mirror the ifr_clearance altitude read
+        # so phraseology can voice the assigned descent altitude.
+        arr_alt = ""
+        if eff_type == "arrival_clearance":
+            try:
+                arr_alt = _clean_fg_str(self.bridge.get(REQ_ALTITUDE) or "")
+            except Exception:
+                _log.debug("arrival clearance altitude read failed", exc_info=True)
+
+        # Windshear path: fetch METAR wind and inject a readable direction/speed
+        # advisory into ``remarks`` so it is appended to the alert sentence.
+        if eff_type == "windshear":
+            try:
+                wind = self._fetch_metar_wind(icao) if icao else None
+                if wind is not None:
+                    remarks = f"Wind {wind[0]:.0f} at {wind[1]:.0f} knots."
+            except Exception:
+                _log.debug("windshear metar read failed", exc_info=True)
+
         return Clearance(
             callsign=eff_callsign,
             clearance_type=eff_type,
@@ -600,13 +666,16 @@ class Sidecar:
             divert_target=divert_target,
             # IFR CRAFT fields double as SimBrief plan fields (mutually exclusive
             # by req type, so ``or`` simply picks whichever path populated them).
+            # ``arr_alt`` is the assigned descent altitude for arrival_clearance.
             route=ifr_route or sb_route,
             destination=ifr_dest or sb_dest,
-            altitude=ifr_alt or sb_alt,
+            altitude=ifr_alt or sb_alt or arr_alt,
             squawk=ifr_squawk,
             # ``frequency`` stays "" for ctaf so phrase_offline adds no controller
             # contact tail; it is only the CRAFT departure freq for ifr_clearance.
             frequency=ifr_dep_freq,
+            hold_fix=hold_fix,
+            efc=efc,
             airspace_class=airspace_class,
             airspace_warning=airspace_warning,
         )

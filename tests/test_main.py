@@ -1718,3 +1718,255 @@ def test_handle_trigger_updates_blackboard_snapshot(tmp_path: Path) -> None:
     assert snap["controller"] == sidecar.persona.name
     assert snap["language"] == "en"
     assert snap["region"] == "us"
+
+
+# ---------------------------------------------------------------------------
+# Stage-1 enrichments: fss_briefing, holding, flow_control,
+#                      arrival_clearance, windshear
+# ---------------------------------------------------------------------------
+
+
+def test_build_clearance_fss_briefing_produces_multi_section_briefing(
+    tmp_path: Path,
+) -> None:
+    """fss_briefing enrichment assembles a multi-section FSS briefing in remarks."""
+    from sidecar.main import REQ_DESTINATION, REQ_ROUTE
+
+    pic = _synthetic_picture()
+    props = {
+        AIRPORT_ID: pic.icao,
+        REQ_TYPE: "fss_briefing",
+        REQ_CALLSIGN: "N123",
+        REQ_RUNWAY: "",
+        POS_LAT: "37.620",
+        POS_LON: "-122.380",
+        REQ_DESTINATION: "KLAX",
+        REQ_ROUTE: "DCT KLAX",
+    }
+    # Disable METAR so there is no outbound network call in CI.
+    from sidecar.config import Settings
+
+    bridge = _FakeBridge(props)
+    from sidecar.cache import PictureCache
+    from sidecar.tts import TTS
+
+    cache = PictureCache(tmp_path / "cache.sqlite")
+    cache.put(pic)
+    backend = _RecordingBackend()
+    settings = Settings(
+        gemini_api_key=None,
+        fg_telnet_host="localhost",
+        fg_telnet_port=5501,
+        cache_db_path="unused",
+        tts_voice="Alex",
+        log_level="INFO",
+        gemini_model_fast="gemini-2.5-flash",
+        gemini_model_pro="gemini-2.5-pro",
+        metar_enabled=False,
+    )
+
+    import hashlib
+    from sidecar.main import Sidecar as _Sidecar
+
+    synth_xml = "<groundnet/>"
+
+    def loader(icao: str) -> str | None:
+        return synth_xml if icao == pic.icao else None
+
+    sidecar_obj = _Sidecar(settings, bridge, _OfflineClient(), cache, TTS(backend=backend), groundnet_loader=loader)
+    clearance = sidecar_obj._build_clearance("fss_briefing", "N123", pic)
+
+    assert "FLIGHT SERVICE STATION BRIEFING" in clearance.remarks
+    assert "WEATHER" in clearance.remarks
+    assert "NOTAMS" in clearance.remarks
+    assert "ROUTE" in clearance.remarks
+    assert "KLAX" in clearance.remarks  # destination appears in the briefing header
+    assert "DCT KLAX" in clearance.remarks  # route appears in the route section
+
+
+def test_build_clearance_holding_populates_hold_fix(tmp_path: Path) -> None:
+    """holding enrichment reads REQ_HOLD_FIX and wires it into Clearance.hold_fix."""
+    from sidecar.main import REQ_EFC, REQ_HOLD_FIX
+
+    pic = _synthetic_picture()
+    props = {
+        AIRPORT_ID: pic.icao,
+        REQ_TYPE: "holding",
+        REQ_CALLSIGN: "UAL5",
+        REQ_RUNWAY: "28L",
+        POS_LAT: "37.620",
+        POS_LON: "-122.380",
+        REQ_HOLD_FIX: "SUNOL",
+    }
+    sidecar, _, _ = _make_with_picture(tmp_path, props, pic)
+    clearance = sidecar._build_clearance("holding", "UAL5", pic)
+
+    assert clearance.hold_fix == "SUNOL"
+
+
+def test_handle_trigger_holding_with_fix_voices_hold_phrase(tmp_path: Path) -> None:
+    """holding with a REQ_HOLD_FIX mailbox value produces the expected phrase."""
+    from sidecar.main import REQ_HOLD_FIX
+
+    pic = _synthetic_picture()
+    props = {
+        AIRPORT_ID: pic.icao,
+        REQ_TYPE: "holding",
+        REQ_CALLSIGN: "UAL5",
+        REQ_RUNWAY: "28L",
+        POS_LAT: "37.620",
+        POS_LON: "-122.380",
+        REQ_TRIGGER: "1",
+        REQ_HOLD_FIX: "SUNOL",
+    }
+    sidecar, bridge, backend = _make_with_picture(tmp_path, props, pic)
+    sidecar.handle_trigger()
+
+    resp = bridge.props[RESP_TEXT]
+    assert "UAL5" in resp
+    assert "SUNOL" in resp
+    assert "as published" in resp
+    assert bridge.props[RESP_READY] == 1
+    assert backend.said
+
+
+def test_build_clearance_flow_control_populates_efc(tmp_path: Path) -> None:
+    """flow_control enrichment reads REQ_EFC and wires it into Clearance.efc."""
+    from sidecar.main import REQ_EFC
+
+    pic = _synthetic_picture()
+    props = {
+        AIRPORT_ID: pic.icao,
+        REQ_TYPE: "flow_control",
+        REQ_CALLSIGN: "DAL7",
+        REQ_RUNWAY: "",
+        POS_LAT: "37.620",
+        POS_LON: "-122.380",
+        REQ_EFC: "1430",
+    }
+    sidecar, _, _ = _make_with_picture(tmp_path, props, pic)
+    clearance = sidecar._build_clearance("flow_control", "DAL7", pic)
+
+    assert clearance.efc == "1430"
+
+
+def test_handle_trigger_flow_control_with_efc_voices_edct(tmp_path: Path) -> None:
+    """flow_control with REQ_EFC set surfaces the EFC time in the response."""
+    from sidecar.main import REQ_EFC
+
+    pic = _synthetic_picture()
+    props = {
+        AIRPORT_ID: pic.icao,
+        REQ_TYPE: "flow_control",
+        REQ_CALLSIGN: "DAL7",
+        REQ_RUNWAY: "",
+        POS_LAT: "37.620",
+        POS_LON: "-122.380",
+        REQ_TRIGGER: "1",
+        REQ_EFC: "1430",
+    }
+    sidecar, bridge, backend = _make_with_picture(tmp_path, props, pic)
+    sidecar.handle_trigger()
+
+    resp = bridge.props[RESP_TEXT]
+    assert "DAL7" in resp
+    assert "1430" in resp
+    assert bridge.props[RESP_READY] == 1
+    assert backend.said
+
+
+def test_build_clearance_arrival_clearance_populates_altitude(tmp_path: Path) -> None:
+    """arrival_clearance enrichment reads REQ_ALTITUDE onto Clearance.altitude."""
+    from sidecar.main import REQ_ALTITUDE
+
+    pic = _synthetic_picture()
+    props = {
+        AIRPORT_ID: pic.icao,
+        REQ_TYPE: "arrival_clearance",
+        REQ_CALLSIGN: "AAL9",
+        REQ_RUNWAY: "28L",
+        POS_LAT: "37.620",
+        POS_LON: "-122.380",
+        REQ_ALTITUDE: "4000",
+    }
+    sidecar, _, _ = _make_with_picture(tmp_path, props, pic)
+    clearance = sidecar._build_clearance("arrival_clearance", "AAL9", pic)
+
+    assert clearance.altitude == "4000"
+
+
+def test_handle_trigger_arrival_clearance_with_altitude_voices_descent(
+    tmp_path: Path,
+) -> None:
+    """arrival_clearance with REQ_ALTITUDE set voices the descent altitude."""
+    from sidecar.main import REQ_ALTITUDE
+
+    pic = _synthetic_picture()
+    props = {
+        AIRPORT_ID: pic.icao,
+        REQ_TYPE: "arrival_clearance",
+        REQ_CALLSIGN: "AAL9",
+        REQ_RUNWAY: "28L",
+        POS_LAT: "37.620",
+        POS_LON: "-122.380",
+        REQ_TRIGGER: "1",
+        REQ_ALTITUDE: "4000",
+    }
+    sidecar, bridge, backend = _make_with_picture(tmp_path, props, pic)
+    sidecar.handle_trigger()
+
+    resp = bridge.props[RESP_TEXT]
+    assert "AAL9" in resp
+    assert "4000" in resp
+    assert bridge.props[RESP_READY] == 1
+    assert backend.said
+
+
+def test_build_clearance_windshear_injects_wind_advisory(
+    tmp_path: Path, monkeypatch: Any
+) -> None:
+    """windshear enrichment injects wind direction/speed into Clearance.remarks."""
+    pic = _synthetic_picture()
+    props = {
+        AIRPORT_ID: pic.icao,
+        REQ_TYPE: "windshear",
+        REQ_CALLSIGN: "UAL1",
+        REQ_RUNWAY: "28L",
+        POS_LAT: "37.620",
+        POS_LON: "-122.380",
+    }
+    sidecar, _, _ = _make_with_picture(tmp_path, props, pic)
+
+    # Inject a known wind so there is no real network call.
+    monkeypatch.setattr(sidecar, "_fetch_metar_wind", lambda icao: (270.0, 15.0))
+    clearance = sidecar._build_clearance("windshear", "UAL1", pic)
+
+    assert "270" in clearance.remarks
+    assert "15" in clearance.remarks
+
+
+def test_handle_trigger_windshear_with_wind_appends_advisory(
+    tmp_path: Path, monkeypatch: Any
+) -> None:
+    """windshear with METAR wind available appends wind direction/speed to the alert."""
+    pic = _synthetic_picture()
+    props = {
+        AIRPORT_ID: pic.icao,
+        REQ_TYPE: "windshear",
+        REQ_CALLSIGN: "UAL1",
+        REQ_RUNWAY: "28L",
+        POS_LAT: "37.620",
+        POS_LON: "-122.380",
+        REQ_TRIGGER: "1",
+    }
+    sidecar, bridge, backend = _make_with_picture(tmp_path, props, pic)
+    monkeypatch.setattr(sidecar, "_fetch_metar_wind", lambda icao: (180.0, 20.0))
+    sidecar.handle_trigger()
+
+    resp = bridge.props[RESP_TEXT]
+    # Base alert present, wind advisory appended.
+    assert "windshear alert" in resp
+    assert "180" in resp
+    assert "20" in resp
+    assert bridge.props[RESP_READY] == 1
+    assert backend.said
