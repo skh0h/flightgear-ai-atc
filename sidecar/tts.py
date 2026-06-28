@@ -134,6 +134,12 @@ class TTS:
         self._queue: queue.Queue[tuple[str, str] | None] = queue.Queue()
         self._thread: threading.Thread | None = None
         self._running = False
+        self._muted = False
+
+    def set_muted(self, flag: bool) -> None:
+        """Silence or un-silence future utterances.  Any utterance already
+        playing is allowed to finish; this only guards new calls to speak()."""
+        self._muted = bool(flag)
 
     def start(self) -> None:
         if self._running:
@@ -168,6 +174,8 @@ class TTS:
         via :func:`voice_for`.  With neither, the instance default voice is used
         — so the legacy ``speak(text)`` behaviour is preserved byte-for-byte.
         """
+        if self._muted:
+            return
         if voice is not None:
             chosen = voice
         elif role is not None:
