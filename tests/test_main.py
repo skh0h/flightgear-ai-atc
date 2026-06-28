@@ -13,7 +13,9 @@ from sidecar.gemini_client import OfflineError
 from sidecar.main import (
     AIRCRAFT_ID,
     AIRPORT_ID,
+    ALT_AGL,
     CONTROLLER_NAME,
+    GEAR_WOW,
     HEARTBEAT,
     LOCAL_HOUR,
     MODE,
@@ -29,7 +31,9 @@ from sidecar.main import (
     RESP_TEXT,
     SIDECAR_MODE,
     STATUS,
+    VOICE_MUTED,
     Sidecar,
+    _publish_initial_state,
     role_for_clearance,
 )
 from sidecar.tts import TTS, TTSBackend, voice_for
@@ -120,6 +124,47 @@ def test_handle_trigger_cancel_resets_without_response(tmp_path: Path) -> None:
     assert bridge.props[REQ_TRIGGER] == 0
     assert bridge.props.get(RESP_TEXT, "") == ""
     assert backend.said == []
+
+
+def test_handle_trigger_muted_suppresses_voice_but_keeps_text(tmp_path: Path) -> None:
+    """Mute=1 must silence spoken audio while RESP_TEXT/RESP_READY are still published."""
+    props = {
+        AIRPORT_ID: "KSFO",
+        REQ_TYPE: "taxi",
+        REQ_CALLSIGN: "UAL123",
+        REQ_RUNWAY: "",
+        POS_LAT: "37.62",
+        POS_LON: "-122.38",
+        REQ_TRIGGER: "1",
+        VOICE_MUTED: "1",
+    }
+    sidecar, bridge, backend = _make(tmp_path, props)
+    sidecar.handle_trigger()
+
+    # Text transcript must still be published
+    assert bridge.props[RESP_TEXT], "RESP_TEXT must be non-empty even when muted"
+    assert bridge.props[RESP_READY] == 1
+    # But no audio should have been queued
+    assert backend.said == [], "TTS backend must receive no utterances while muted"
+
+
+def test_handle_trigger_unmuted_still_speaks(tmp_path: Path) -> None:
+    """Regression: with VOICE_MUTED unset (or '0') the request still produces audio."""
+    props = {
+        AIRPORT_ID: "KSFO",
+        REQ_TYPE: "taxi",
+        REQ_CALLSIGN: "UAL123",
+        REQ_RUNWAY: "",
+        POS_LAT: "37.62",
+        POS_LON: "-122.38",
+        REQ_TRIGGER: "1",
+        VOICE_MUTED: "0",
+    }
+    sidecar, bridge, backend = _make(tmp_path, props)
+    sidecar.handle_trigger()
+
+    assert bridge.props[RESP_TEXT], "RESP_TEXT must be non-empty when unmuted"
+    assert backend.said, "TTS backend must receive utterances when unmuted"
 
 
 def test_get_airport_picture_uses_cache_and_offline_parser(tmp_path: Path) -> None:
@@ -553,6 +598,84 @@ def test_fg_bool_false_not_spoken_as_runway_or_callsign(tmp_path: Path) -> None:
     assert "Aircraft" in resp, f"callsign should fall back to 'Aircraft': {resp!r}"
     assert "28L" in resp, f"runway should auto-select to 28L: {resp!r}"
     assert bridge.props[RESP_READY] == 1
+    assert bridge.props[REQ_TRIGGER] == 0
+
+
+# ---------------------------------------------------------------------------
+# Fix 2: airborne guard for ground-type requests
+# ---------------------------------------------------------------------------
+
+
+def test_handle_trigger_taxi_on_ground_gives_clearance(tmp_path: Path) -> None:
+    """Taxi request with WoW true → normal taxi clearance is issued."""
+    props = {
+        AIRPORT_ID: "KSFO",
+        REQ_TYPE: "taxi",
+        REQ_CALLSIGN: "UAL1",
+        REQ_RUNWAY: "",
+        POS_LAT: "37.62",
+        POS_LON: "-122.38",
+        REQ_TRIGGER: "1",
+        GEAR_WOW: "true",   # on the ground
+        ALT_AGL: "5.0",
+    }
+    sidecar, bridge, backend = _make(tmp_path, props)
+    sidecar.handle_trigger()
+
+    assert bridge.props[RESP_READY] == 1
+    assert bridge.props[STATUS] == "idle"
+    assert bridge.props[REQ_TRIGGER] == 0
+    resp = bridge.props[RESP_TEXT]
+    assert "UAL1" in resp
+    assert "airborne" not in resp.lower()
+    assert backend.said
+
+
+def test_handle_trigger_taxi_airborne_gives_refusal(tmp_path: Path) -> None:
+    """Taxi request while airborne → refusal response, no taxi clearance, trigger cleared."""
+    props = {
+        AIRPORT_ID: "KSFO",
+        REQ_TYPE: "taxi",
+        REQ_CALLSIGN: "UAL1",
+        REQ_RUNWAY: "",
+        POS_LAT: "37.62",
+        POS_LON: "-122.38",
+        REQ_TRIGGER: "1",
+        GEAR_WOW: "false",   # NOT on ground
+        ALT_AGL: "5000.0",   # clearly airborne
+    }
+    sidecar, bridge, backend = _make(tmp_path, props)
+    sidecar.handle_trigger()
+
+    resp = bridge.props[RESP_TEXT]
+    assert "UAL1" in resp
+    assert "airborne" in resp.lower() or "departure" in resp.lower()
+    assert bridge.props[RESP_READY] == 1
+    assert bridge.props[STATUS] == "idle"
+    assert bridge.props[REQ_TRIGGER] == 0
+    assert backend.said
+
+
+def test_handle_trigger_pushback_airborne_gives_refusal(tmp_path: Path) -> None:
+    """Pushback (also in _GROUND_TYPES) while airborne → refusal."""
+    props = {
+        AIRPORT_ID: "KSFO",
+        REQ_TYPE: "pushback",
+        REQ_CALLSIGN: "SWA5",
+        REQ_RUNWAY: "",
+        POS_LAT: "37.62",
+        POS_LON: "-122.38",
+        REQ_TRIGGER: "1",
+        GEAR_WOW: "false",
+        ALT_AGL: "3000.0",
+    }
+    sidecar, bridge, backend = _make(tmp_path, props)
+    sidecar.handle_trigger()
+
+    resp = bridge.props[RESP_TEXT]
+    assert "SWA5" in resp
+    assert bridge.props[RESP_READY] == 1
+    assert bridge.props[STATUS] == "idle"
     assert bridge.props[REQ_TRIGGER] == 0
 
 
@@ -1718,3 +1841,169 @@ def test_handle_trigger_updates_blackboard_snapshot(tmp_path: Path) -> None:
     assert snap["controller"] == sidecar.persona.name
     assert snap["language"] == "en"
     assert snap["region"] == "us"
+
+
+# ---------------------------------------------------------------------------
+# Service mode: supervisor loop, reconnect-after-drop, no-Gemini-while-waiting
+# ---------------------------------------------------------------------------
+
+
+from sidecar.fg_bridge import BridgeError
+from sidecar.main import STATUS, run_service
+
+
+class _DroppingBridge:
+    """Fake bridge for service-mode tests.
+
+    ``connect_fail_count`` — how many connect() calls raise BridgeError first.
+    ``get_fail_count``     — how many get() calls raise BridgeError (simulates
+                             a mid-session socket drop that breaks poll_loop).
+    All set() calls always succeed.
+    """
+
+    def __init__(
+        self,
+        *,
+        connect_fail_count: int = 0,
+        get_fail_count: int = 0,
+    ) -> None:
+        self._connect_fails_left = connect_fail_count
+        self._get_fails_left = get_fail_count
+        self.connect_calls: int = 0
+        self.props: dict[str, Any] = {REQ_TRIGGER: "0"}
+        self.sets: list[tuple[str, Any]] = []
+
+    def connect(
+        self,
+        *,
+        retries: int = 5,
+        backoff: float = 0.5,
+        _sleep: Any = None,
+    ) -> None:
+        self.connect_calls += 1
+        if self._connect_fails_left > 0:
+            self._connect_fails_left -= 1
+            raise BridgeError("FlightGear not available yet (fake)")
+
+    def get(self, path: str) -> str:
+        if self._get_fails_left > 0:
+            self._get_fails_left -= 1
+            raise BridgeError("connection dropped (fake)")
+        return str(self.props.get(path, ""))
+
+    def set(self, path: str, value: Any) -> None:
+        self.props[path] = value
+        self.sets.append((path, value))
+
+    def close(self) -> None:
+        pass
+
+
+def test_run_service_waits_for_fg_then_connects(tmp_path: Path) -> None:
+    """run_service retries connect() until FG comes up, then publishes state."""
+    bridge = _DroppingBridge(connect_fail_count=3)
+    cache = PictureCache(tmp_path / "cache.sqlite")
+    tts = TTS(backend=_RecordingBackend())
+    sidecar = Sidecar(
+        _settings(), bridge, _OfflineClient(), cache, tts,
+        groundnet_loader=lambda _: None,
+    )
+
+    run_service(
+        sidecar, _settings(),
+        supervise=True,
+        _sleep=lambda _: None,
+        _poll_sleep=lambda _: None,
+        _poll_max_iterations=1,
+    )
+
+    # 3 failures + 1 success
+    assert bridge.connect_calls == 4
+    # Initial state must have been published after the successful connect.
+    published_paths = [k for k, _ in bridge.sets]
+    assert STATUS in published_paths
+    assert bridge.props[STATUS] == "idle"
+
+
+def test_run_service_reconnects_after_drop(tmp_path: Path) -> None:
+    """After poll_loop breaks on BridgeError, run_service reconnects and
+    re-publishes the initial sidecar state."""
+    # First get() call raises BridgeError → poll_loop breaks → supervisor
+    # reconnects → second connect succeeds → second poll_loop runs cleanly.
+    bridge = _DroppingBridge(connect_fail_count=0, get_fail_count=1)
+    cache = PictureCache(tmp_path / "cache.sqlite")
+    tts = TTS(backend=_RecordingBackend())
+    sidecar = Sidecar(
+        _settings(), bridge, _OfflineClient(), cache, tts,
+        groundnet_loader=lambda _: None,
+    )
+
+    run_service(
+        sidecar, _settings(),
+        supervise=True,
+        _sleep=lambda _: None,
+        _poll_sleep=lambda _: None,
+        _poll_max_iterations=1,
+    )
+
+    # Should have connected twice: once at start, once after the drop.
+    assert bridge.connect_calls == 2
+    # STATUS="idle" is published on each connect → appears at least twice.
+    idle_publishes = [v for k, v in bridge.sets if k == STATUS and v == "idle"]
+    assert len(idle_publishes) >= 2
+
+
+def test_run_service_no_gemini_while_waiting(tmp_path: Path) -> None:
+    """While waiting for FlightGear (connect retries), the Gemini client is
+    never invoked — no AI calls happen outside the connected poll loop."""
+
+    class _TrackingClient:
+        def __init__(self) -> None:
+            self.call_count = 0
+
+        def generate(self, *args: Any, **kwargs: Any) -> Any:
+            self.call_count += 1
+            raise OfflineError("offline in test")
+
+    bridge = _DroppingBridge(connect_fail_count=3)
+    cache = PictureCache(tmp_path / "cache.sqlite")
+    tts = TTS(backend=_RecordingBackend())
+    client = _TrackingClient()
+    sidecar = Sidecar(
+        _settings(), bridge, client, cache, tts,
+        groundnet_loader=lambda _: None,
+    )
+
+    # _poll_max_iterations=0: poll_loop runs zero iterations so handle_trigger
+    # (the only place Gemini is called) is never reached.
+    run_service(
+        sidecar, _settings(),
+        supervise=True,
+        _sleep=lambda _: None,
+        _poll_sleep=lambda _: None,
+        _poll_max_iterations=0,
+    )
+
+    assert client.call_count == 0, (
+        "Gemini must not be called during connect-wait or before any trigger fires"
+    )
+
+
+def test_publish_initial_state_resets_mailbox(tmp_path: Path) -> None:
+    """_publish_initial_state must clear the request/response mailbox so that a
+    latched REQ_TRIGGER=1 does not re-fire on reconnect and a stale RESP_TEXT
+    forces the Nasal setlistener to refire on the next reply."""
+    props: dict[str, Any] = {
+        REQ_TRIGGER: "1",   # latched from a previous session
+        RESP_TEXT: "old clearance",
+        RESP_READY: "1",
+    }
+    sidecar, bridge, _ = _make(tmp_path, props)
+    settings = _settings()
+
+    _publish_initial_state(sidecar, settings)
+
+    written = dict(bridge.sets)  # last value written for each path
+    assert written[REQ_TRIGGER] == 0
+    assert written[RESP_TEXT] == ""
+    assert written[RESP_READY] == 0

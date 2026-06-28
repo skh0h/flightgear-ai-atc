@@ -109,7 +109,7 @@ var _set_defaults = func {
     setprop(ROOT ~ "/log", "");
     setprop(ROOT ~ "/sidecar/heartbeat", -1);
     setprop(ROOT ~ "/sidecar/mode", "");
-    setprop(ROOT ~ "/backend", "Not running — launch run-mac.command");
+    setprop(ROOT ~ "/backend", "Not running - launch run-mac.command");
     # Interaction mode + quiet-night easter-egg inputs. Seeded so the dialog's
     # live bindings and the sidecar both see well-formed values at startup; the
     # add-on refreshes /local-hour from sim time, the sidecar writes /controller/name.
@@ -148,6 +148,9 @@ var _set_defaults = func {
     # well-formed values before the user changes them.
     setprop(ROOT ~ "/language", "en");
     setprop(ROOT ~ "/region", "us");
+    # Voice mute flag: 0 = unmuted (default), 1 = spoken audio suppressed.
+    # Text transcript (RESP_TEXT/RESP_READY) is always published regardless.
+    setprop(ROOT ~ "/voice/muted", 0);
 };
 
 # Append one line to the scrolling transcript.
@@ -269,6 +272,13 @@ var set_region = func(reg) {
     setprop(ROOT ~ "/region", string.lc(reg));
 };
 
+# Mute or unmute spoken audio.  Exposed on globals.aiatc so a panel checkbox
+# (which runs in the global scope) can call aiatc.set_muted(1) / aiatc.set_muted(0).
+# Text transcript (RESP_TEXT / RESP_READY) is always published regardless.
+var set_muted = func(on) {
+    setprop(ROOT ~ "/voice/muted", on ? 1 : 0);
+};
+
 # Publish runway + frequency data from airportinfo() into the /ai-atc/airport/
 # mailbox so the Python sidecar can read real runway/frequency data.
 var publish_airport_data = func(icao) {
@@ -283,19 +293,28 @@ var publish_airport_data = func(icao) {
     setprop(ROOT ~ "/airport/icao", info.id);
     setprop(ROOT ~ "/airport/name", info.name);
 
-    # Frequencies — comms() may not be available for all airports; guard each call.
-    var freq_types = ["ground", "tower", "atis", "approach", "departure"];
+    # Frequencies — call comms() with no argument to get all comm objects.
+    # Each object has .ident (e.g. "Ground", "Tower", "ATIS") and .frequency
+    # already in MHz (confirmed from FG1000/garmin196 Nasal source).
+    # comms(type_string) is case-sensitive and returns empty for lowercase keys,
+    # so we fetch all and match by substring against lowercased .ident.
     var _err = [];
-    foreach (var fname; freq_types) {
-        var f = nil;
-        _err = [];
-        call(func { f = info.comms(fname); }, nil, _err);
-        if (size(_err) == 0 and f != nil and size(f) > 0) {
-            _err = [];
+    var all_comms = nil;
+    call(func { all_comms = info.comms(); }, nil, _err);
+    if (size(_err) == 0 and all_comms != nil) {
+        var freq_keys = ["ground", "tower", "atis", "approach", "departure"];
+        foreach (var c; all_comms) {
+            var ident = nil;
             var hz = nil;
-            call(func { hz = f[0].frequency; }, nil, _err);
-            if (size(_err) == 0 and hz != nil)
-                setprop(ROOT ~ "/airport/freq/" ~ fname, sprintf("%.2f", hz / 1000.0));
+            _err = [];
+            call(func { ident = string.lc(c.ident); hz = c.frequency; }, nil, _err);
+            if (size(_err) != 0 or ident == nil or hz == nil or hz <= 0) continue;
+            foreach (var key; freq_keys) {
+                if (find(key, ident) >= 0) {
+                    setprop(ROOT ~ "/airport/freq/" ~ key, sprintf("%.3f", hz));
+                    break;
+                }
+            }
         }
     }
 
@@ -477,7 +496,7 @@ var _update_backend_status = func {
 
     if (hb == _last_heartbeat or hb < 0) {
         # Heartbeat not advancing (or never set by sidecar) — backend is gone.
-        setprop(ROOT ~ "/backend", "Not running — launch run-mac.command");
+        setprop(ROOT ~ "/backend", "Not running - launch run-mac.command");
     } elsif (mode == "ai") {
         setprop(ROOT ~ "/backend", "Connected (AI)");
     } else {
@@ -492,7 +511,7 @@ var main = func(addon) {
     # Expose request() in the global namespace so dialog <command>nasal</command>
     # bindings (which run in the global scope, not the add-on scope) can reach it
     # via the short name  aiatc.request("pushback")  etc.
-    globals.aiatc = { request: request, ptt: ptt, set_runway_active: set_runway_active, set_mode: set_mode, set_language: set_language, set_region: set_region };
+    globals.aiatc = { request: request, ptt: ptt, set_runway_active: set_runway_active, set_mode: set_mode, set_language: set_language, set_region: set_region, set_muted: set_muted };
 
     # Surface each new clearance in the transcript as the sidecar writes it.
     append(_listeners, setlistener(ROOT ~ "/response/text", func(n) {

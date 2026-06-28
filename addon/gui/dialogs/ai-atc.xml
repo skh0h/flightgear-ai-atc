@@ -210,7 +210,6 @@
     <text><label>Callsign:</label></text>
     <input>
       <property>/ai-atc/request/callsign</property>
-      <live type="bool">true</live>
       <pref-width type="int">100</pref-width>
     </input>
     <text><label>  Runway:</label></text>

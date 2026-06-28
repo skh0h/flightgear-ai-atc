@@ -76,6 +76,8 @@ AIRPORT_ID = "/sim/presets/airport-id"
 POS_LAT = "/position/latitude-deg"
 POS_LON = "/position/longitude-deg"
 AIRCRAFT_ID = "/sim/aircraft-id"
+GEAR_WOW = "/gear/gear[0]/wow"          # weight-on-wheels (bool)
+ALT_AGL = "/position/altitude-agl-ft"   # altitude above ground level in feet
 
 # --- diversion: nearest-airport contract (Nasal publishes, sidecar reads) ----
 NEAREST_AIRPORT_ICAO = "/ai-atc/nearest-airport/icao"
@@ -134,6 +136,11 @@ KNEEBOARD = "/ai-atc/kneeboard"
 # clearance here (newline-joined, "" when clean).  ADVISORY ONLY: the clearance
 # in RESP_TEXT is always published regardless of issues.
 GUARDRAIL = "/ai-atc/guardrail"
+
+# --- Voice mute -------------------------------------------------------------
+# Nasal seeds this to 0 (unmuted) at startup. A panel "Mute Voice" checkbox
+# can write 1 to silence spoken audio while RESP_TEXT/RESP_READY are unaffected.
+VOICE_MUTED = "/ai-atc/voice/muted"
 
 
 def _is_true(value: str) -> bool:
@@ -445,6 +452,7 @@ class Sidecar:
         self.fsm = FlightStateMachine()
         # Phase 10: shared world-state blackboard (advisory; refreshed per request).
         self.blackboard = Blackboard()
+        self._running = False
         # Best-effort publish so the panel can show who is working the position.
         try:
             self.bridge.set(CONTROLLER_NAME, self.persona.name)
@@ -918,6 +926,13 @@ class Sidecar:
         except Exception:
             _log.debug("blackboard update failed", exc_info=True)
 
+        # Mute: read once per request and apply best-effort.  FG serializes
+        # bool-false as the truthy string "false"; _is_true("false") → False.
+        try:
+            self.tts.set_muted(_is_true(self.bridge.get(VOICE_MUTED) or "0"))
+        except Exception:
+            pass  # best-effort; default unmuted
+
         if req_type == "cancel":
             self.bridge.set(STATUS, "idle")
             self.bridge.set(REQ_TRIGGER, 0)
@@ -939,6 +954,23 @@ class Sidecar:
         if req_type == "career":
             self._handle_career(callsign)
             return
+
+        # Airborne guard: refuse ground-movement clearances when the aircraft
+        # is not on the ground.  on_ground is true when gear WoW fires OR when
+        # altitude-AGL is below 50 ft (covers the sensor-quiet taxi regime).
+        # Both properties are standard FG sim values readable via telnet without
+        # any Nasal publish; absent/unset properties default to WoW=false/AGL=0,
+        # so existing unit tests (no GEAR_WOW in props) read AGL=0 < 50 → on_ground.
+        if req_type in _GROUND_TYPES:
+            wow = _is_true(self.bridge.get(GEAR_WOW))
+            agl = _to_float(self.bridge.get(ALT_AGL), default=0.0)
+            if not (wow or agl < 50.0):
+                self._finish_announce(
+                    f"{callsign}, unable — you appear to be airborne. "
+                    "Contact Departure Control.",
+                    "tower",
+                )
+                return
 
         self.bridge.set(STATUS, "processing")
         aircraft_type = ""
@@ -1100,12 +1132,16 @@ class Sidecar:
         max_iterations: int | None = None,
         _sleep: Callable[[float], None] = time.sleep,
         heartbeat_interval: float = 5.0,
-    ) -> None:
+    ) -> bool:
         """Poll the trigger property and dispatch requests.
 
         ``max_iterations`` bounds the loop for tests; ``None`` runs until
-        :meth:`stop` or a signal.  Bridge errors are logged and retried on the
-        next tick rather than crashing the loop.
+        :meth:`stop` or a signal.
+
+        Returns ``True`` on a clean exit (stop() or max_iterations reached),
+        ``False`` when a connection-level :class:`BridgeError` caused an early
+        break — the caller (e.g. :func:`run_service`) should then close the
+        bridge and attempt to reconnect.
 
         Every ``heartbeat_interval`` seconds the loop increments
         ``/ai-atc/sidecar/heartbeat`` and writes ``/ai-atc/sidecar/mode`` so
@@ -1115,12 +1151,18 @@ class Sidecar:
         iterations = 0
         heartbeat_counter = 0
         elapsed_since_heartbeat = 0.0
+        _clean_exit = True
         while self._running and (max_iterations is None or iterations < max_iterations):
             try:
                 if _is_true(self.bridge.get(REQ_TRIGGER)):
                     self.handle_trigger()
             except BridgeError:
-                _log.warning("bridge error during poll; will retry", exc_info=True)
+                _log.warning(
+                    "bridge connection lost during poll; breaking to reconnect",
+                    exc_info=True,
+                )
+                _clean_exit = False
+                break
             elapsed_since_heartbeat += interval
             if elapsed_since_heartbeat >= heartbeat_interval:
                 elapsed_since_heartbeat = 0.0
@@ -1135,6 +1177,7 @@ class Sidecar:
                     pass  # heartbeat is best-effort
             iterations += 1
             _sleep(interval)
+        return _clean_exit
 
     def stop(self) -> None:
         self._running = False
@@ -1150,6 +1193,116 @@ def build_sidecar(settings: Settings) -> Sidecar:
     # construct TTS with their own recording backend and never call build_sidecar.
     tts = TTS(voice=settings.tts_voice, backend=make_tts_backend(settings))
     return Sidecar(settings, bridge, client, cache, tts)
+
+
+def _publish_initial_state(sidecar: "Sidecar", settings: Settings) -> None:
+    """Write the sidecar-owned properties immediately after each telnet connect.
+
+    Called once per successful connect (including every reconnect).  Raises
+    :class:`BridgeError` when the just-connected socket is already gone —
+    :func:`run_service` treats that as a failed cycle and retries.
+    """
+    mode = "ai" if settings.gemini_api_key else "offline"
+    sidecar.bridge.set(STATUS, "idle")
+    sidecar.bridge.set(SIDECAR_MODE, mode)
+    sidecar.bridge.set(HEARTBEAT, 0)
+    sidecar.bridge.set(CONTROLLER_NAME, sidecar.persona.name)
+    # Reset the request/response mailbox so a latched REQ_TRIGGER=1 does not
+    # re-fire handle_trigger() on reconnect and a stale RESP_TEXT forces the
+    # Nasal setlistener (fires on value-change only) to refire on next reply.
+    sidecar.bridge.set(REQ_TRIGGER, 0)
+    sidecar.bridge.set(RESP_TEXT, "")
+    sidecar.bridge.set(RESP_READY, 0)
+
+
+def run_service(
+    sidecar: "Sidecar",
+    settings: Settings,
+    *,
+    supervise: bool = True,
+    _sleep: Callable[[float], None] = time.sleep,
+    _poll_sleep: Callable[[float], None] | None = None,
+    _poll_max_iterations: int | None = None,
+) -> None:
+    """Service-mode runner: wait for FlightGear, run poll_loop, reconnect on drop.
+
+    ``supervise=False`` does a single connect + single poll_loop pass (for
+    callers that want the old one-shot behaviour).
+
+    The ``_sleep`` parameter controls the wait between connect retries; the
+    ``_poll_sleep`` / ``_poll_max_iterations`` parameters are forwarded to
+    :meth:`Sidecar.poll_loop` so tests can run bounded, instant-sleep passes.
+    """
+    effective_poll_sleep = _poll_sleep if _poll_sleep is not None else time.sleep
+
+    if not supervise:
+        sidecar.bridge.connect()
+        _publish_initial_state(sidecar, settings)
+        sidecar.poll_loop(_sleep=effective_poll_sleep, max_iterations=_poll_max_iterations)
+        return
+
+    # --- outer supervision loop -------------------------------------------
+    sidecar._running = True
+    backoff = 1.0
+    _MAX_BACKOFF = 5.0
+    _first_wait_logged = False
+    _last_wait_log: float = 0.0
+
+    while sidecar._running:
+        # Phase 1: wait for FlightGear to be reachable on telnet.
+        connected = False
+        while sidecar._running and not connected:
+            try:
+                sidecar.bridge.connect(retries=1, backoff=0.0)
+                connected = True
+                backoff = 1.0  # reset for next disconnect cycle
+                _first_wait_logged = False
+            except BridgeError:
+                now = time.monotonic()
+                if not _first_wait_logged:
+                    _log.info(
+                        "waiting for FlightGear (telnet :%d)...",
+                        settings.fg_telnet_port,
+                    )
+                    _first_wait_logged = True
+                    _last_wait_log = now
+                elif now - _last_wait_log >= 30.0:
+                    _log.info(
+                        "still waiting for FlightGear (telnet :%d)...",
+                        settings.fg_telnet_port,
+                    )
+                    _last_wait_log = now
+                _sleep(backoff)
+                backoff = min(backoff * 2, _MAX_BACKOFF)
+
+        if not sidecar._running:
+            break
+
+        # Phase 2: publish the initial sidecar state to FG properties.
+        try:
+            _publish_initial_state(sidecar, settings)
+        except BridgeError:
+            _log.warning("initial state publish failed; closing and retrying")
+            sidecar.bridge.close()
+            continue
+
+        # Phase 3: run the event loop until either stop() or a socket drop.
+        _log.info("FlightGear connected; starting poll loop")
+        clean = sidecar.poll_loop(
+            _sleep=effective_poll_sleep,
+            max_iterations=_poll_max_iterations,
+        )
+
+        if not sidecar._running:
+            break  # stop() was called; exit the service loop cleanly
+
+        if clean:
+            # poll_loop exited via max_iterations (test-mode bounded run).
+            break
+
+        # poll_loop exited via BridgeError: FG closed or network dropped.
+        _log.info("FlightGear connection lost; waiting to reconnect...")
+        sidecar.bridge.close()
 
 
 def _run_selftest(*, telnet: bool = False) -> None:
@@ -1242,15 +1395,7 @@ def main() -> None:
 
     sidecar.tts.start()
     try:
-        sidecar.bridge.connect()
-        sidecar.bridge.set(STATUS, "idle")
-        mode = "ai" if settings.gemini_api_key else "offline"
-        sidecar.bridge.set(SIDECAR_MODE, mode)
-        sidecar.bridge.set(HEARTBEAT, 0)
-        sidecar.bridge.set(CONTROLLER_NAME, sidecar.persona.name)
-        sidecar.poll_loop()
-    except BridgeError as exc:
-        _log.error("could not start sidecar: %s", exc)
+        run_service(sidecar, settings)
     finally:
         sidecar.tts.stop()
         sidecar.bridge.close()
